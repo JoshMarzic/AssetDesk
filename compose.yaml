@@ -1,0 +1,78 @@
+services:
+  db:
+    image: mariadb:11.4@sha256:d1891ede5a559f1086f55053bb8cc1569b0298338c4d72d71725a7f74f6ba620
+    environment:
+      MARIADB_DATABASE: bookstack
+      MARIADB_USER: bookstack
+      MARIADB_PASSWORD: ${DB_PASSWORD:?Run node scripts/setup.mjs}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Run node scripts/setup.mjs}
+    volumes:
+      - database:/var/lib/mysql
+    healthcheck:
+      test: [CMD, healthcheck.sh, --connect, --innodb_initialized]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  bookstack:
+    image: ghcr.io/linuxserver/bookstack:latest@sha256:da6324232770050b7d5f6222e8f4e223f1c688363b02ebb3c15a7546dd7133d5
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: UTC
+      APP_URL: ${BOOKSTACK_PUBLIC_URL:-http://localhost:6875}
+      APP_KEY: ${BOOKSTACK_APP_KEY:?Run node scripts/setup.mjs}
+      APP_DEFAULT_DARK_MODE: "false"
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_DATABASE: bookstack
+      DB_USERNAME: bookstack
+      DB_PASSWORD: ${DB_PASSWORD:?Run node scripts/setup.mjs}
+    ports:
+      - "127.0.0.1:6875:80"
+    volumes:
+      - bookstack:/config
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://localhost/login]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
+    restart: unless-stopped
+
+  assetdesk:
+    build:
+      context: .
+    environment:
+      BOOKSTACK_URL: http://bookstack:80
+      BOOKSTACK_PUBLIC_URL: ${BOOKSTACK_PUBLIC_URL:-http://localhost:6875}
+      BOOKSTACK_TOKEN_ID: ${BOOKSTACK_TOKEN_ID:?Run node scripts/setup.mjs}
+      BOOKSTACK_TOKEN_SECRET: ${BOOKSTACK_TOKEN_SECRET:?Run node scripts/setup.mjs}
+      INBOUND_EMAIL_TOKEN: ${INBOUND_EMAIL_TOKEN:?Run node scripts/setup.mjs}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?Run node scripts/setup.mjs}
+      ASSET_PREFIXES: ${ASSET_PREFIXES:-ASSET,LAPTOP,DESKTOP,PC,SRV,SERVER,PRINTER,MONITOR,SW}
+      SUPPORT_EMAILS: ${SUPPORT_EMAILS:-}
+      DATABASE_PATH: /data/assetdesk.sqlite
+      PORT: 3000
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - intake:/data
+    depends_on:
+      bookstack:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  database:
+  bookstack:
+  intake:

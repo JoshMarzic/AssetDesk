@@ -1,0 +1,18 @@
+{
+  "name": "assetdesk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Email-to-ticket and asset management for the native BookStack UI",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test test/*.test.js",
+    "check": "node --check src/server.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "mailparser": "^3.9.12"
+  }
+}
