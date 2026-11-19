@@ -2,6 +2,7 @@ import express from 'express';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { parseRawEmail } from './email.js';
 import { createKnowledgeRouter } from './knowledge.js';
+import { createAssetsRouter } from './workspace-routes.js';
 
 const COOKIE = 'assetdesk_session';
 const SESSION_MS = 8 * 60 * 60 * 1000;
@@ -53,12 +54,11 @@ function onlyFields(body, allowed) {
 }
 
 /** Browser session API. The mail/API bearer credentials never enter the UI. */
-export function createDeskRouter({ desk, store, worker, config, bookstack }) {
+export function createDeskRouter({ desk, store, worker, config, workspace }) {
   const router = express.Router();
   const loginFailures = new Map();
   const cookieOptions = { httpOnly: true, sameSite: 'strict', secure: Boolean(config.cookieSecure), path: '/' };
-  const sessionBody = session => ({ user: session.user, csrfToken: session.csrfToken,
-    bookstackUrl: config.bookstack?.publicUrl || config.bookstack?.url || '' });
+  const sessionBody = session => ({ user: session.user, csrfToken: session.csrfToken });
 
   router.use((req, res, next) => {
     res.set('Cache-Control', 'no-store');
@@ -68,7 +68,12 @@ export function createDeskRouter({ desk, store, worker, config, bookstack }) {
     }
     next();
   });
-  router.use(express.json({ limit: '512kb' }));
+  const jsonBody = express.json({ limit: '512kb' });
+  const imageBody = express.json({ limit: '15mb' });
+  router.use((req, res, next) => {
+    const imageUpload = req.method === 'POST' && /^\/knowledge\/articles\/[^/]+\/images$/.test(req.path);
+    return (imageUpload ? imageBody : jsonBody)(req, res, next);
+  });
 
   router.post('/login', async (req, res) => {
     const body = objectBody(req.body);
@@ -119,7 +124,8 @@ export function createDeskRouter({ desk, store, worker, config, bookstack }) {
   const adminOnly = (req, res, next) => req.deskSession.user.role === 'admin'
     ? next() : res.status(403).json({ error: 'Administrator access is required.' });
 
-  router.use('/knowledge', createKnowledgeRouter({ bookstack, desk, config }));
+  router.use('/knowledge', createKnowledgeRouter({ workspace, config }));
+  router.use('/assets', createAssetsRouter({ workspace }));
 
   router.get('/session', (req, res) => res.json(sessionBody(req.deskSession)));
   router.post('/logout', (req, res) => {
@@ -127,8 +133,22 @@ export function createDeskRouter({ desk, store, worker, config, bookstack }) {
     res.clearCookie(COOKIE, cookieOptions);
     res.json({ ok: true });
   });
-  router.get('/dashboard', (_req, res) => res.json({ ...desk.dashboard(), intake: { counts: store.counts() } }));
-  router.get('/assets', (_req, res) => res.json({ assets: desk.listAssets() }));
+  const visibleEvents = (events, user) => events.filter(event => {
+    if (event.type !== 'asset_link') return true;
+    const ref = event.body.match(/^Linked asset (.+)$/)?.[1];
+    if (!ref) return false;
+    const asset = workspace.assetRow(ref);
+    return Boolean(asset && workspace.canReadCategory(workspace.categoryRow(asset.category_id), user));
+  });
+  const presentTicket = (ticket, user) => ticket && ({ ...ticket,
+    assets: workspace.ticketAssets(ticket.key, user), related_tickets: workspace.relatedTickets(ticket.key, user),
+    events: visibleEvents(ticket.events || [], user) });
+  router.get('/dashboard', (req, res) => {
+    const dashboard = desk.dashboard();
+    dashboard.activity = visibleEvents(dashboard.activity, req.deskSession.user);
+    dashboard.recentActivity = dashboard.activity;
+    res.json({ ...dashboard, intake: { counts: store.counts() } });
+  });
   router.get('/responses', (_req, res) => res.json({ responses: desk.listResponses() }));
   router.post('/responses', adminOnly, (req, res) => {
     const body = objectBody(req.body);
@@ -216,7 +236,7 @@ export function createDeskRouter({ desk, store, worker, config, bookstack }) {
   router.get('/tickets/:key', (req, res) => {
     const ticket = desk.getTicket(req.params.key);
     if (!ticket) throw invalid('Ticket not found.', 404);
-    res.json(ticket);
+    res.json(presentTicket(ticket, req.deskSession.user));
   });
   router.patch('/tickets/:key', (req, res) => {
     const body = objectBody(req.body);
@@ -224,12 +244,12 @@ export function createDeskRouter({ desk, store, worker, config, bookstack }) {
     if (!Number.isSafeInteger(body.version) || body.version < 1) throw invalid('The ticket version is required. Refresh and try again.');
     const { version, ...patch } = body;
     if (!Object.keys(patch).length) throw invalid('Provide a ticket change.');
-    res.json(desk.updateTicket(req.params.key, patch, { actor: req.deskSession.user, version }));
+    res.json(presentTicket(desk.updateTicket(req.params.key, patch, { actor: req.deskSession.user, version }), req.deskSession.user));
   });
   router.post('/tickets/:key/notes', (req, res) => {
     const body = objectBody(req.body);
     onlyFields(body, ['body']);
-    res.status(201).json(desk.addNote(req.params.key, { body: body.body, actor: req.deskSession.user }));
+    res.status(201).json(presentTicket(desk.addNote(req.params.key, { body: body.body, actor: req.deskSession.user }), req.deskSession.user));
   });
   router.post('/tickets/:key/assets', (req, res) => {
     const body = objectBody(req.body);
@@ -237,9 +257,17 @@ export function createDeskRouter({ desk, store, worker, config, bookstack }) {
     if (typeof body.ref !== 'string') throw invalid('Provide an asset ID.');
     const ref = body.ref.trim().toUpperCase();
     if (!/^[A-Z0-9][A-Z0-9._-]{0,63}$/.test(ref)) throw invalid('Asset IDs must contain 1 to 64 letters, numbers, dots, underscores, or hyphens.');
-    const result = desk.queueAssetLink(req.params.key, ref, req.deskSession.user);
-    worker.wake();
-    res.status(202).json(result);
+    if (!desk.getTicket(req.params.key)) throw invalid('Ticket not found.', 404);
+    const result = workspace.transaction(() => {
+      let asset;
+      try { asset = workspace.getAsset(ref, req.deskSession.user); }
+      catch (error) {
+        if (error.statusCode !== 404 || workspace.assetRow(ref)) throw error;
+        asset = workspace.createAsset({ ref, name: ref, type: 'hardware' }, req.deskSession.user);
+      }
+      return workspace.linkTicket(req.params.key, asset.id, req.deskSession.user);
+    });
+    res.status(201).json({ ...result, queued: false });
   });
 
   router.use((_req, res) => res.status(404).json({ error: 'Not found.' }));

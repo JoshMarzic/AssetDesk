@@ -7,6 +7,8 @@ RUN --mount=type=secret,id=proxy_ca \
     npm ci --omit=dev --strict-ssl=true
 COPY --chown=node:node src ./src
 COPY --chown=node:node public ./public
+COPY --chown=node:node scripts/import-bookstack.mjs ./scripts/import-bookstack.mjs
+COPY --chown=node:node migration ./migration
 RUN mkdir /data && chown node:node /data
 USER node
 ENV NODE_ENV=production PORT=3000 DATABASE_PATH=/data/assetdesk.sqlite

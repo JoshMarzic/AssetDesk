@@ -4,6 +4,7 @@ import express from 'express';
 import { once } from 'node:events';
 import { Store } from '../src/store.js';
 import { DeskStore } from '../src/desk-store.js';
+import { WorkspaceStore } from '../src/workspace-store.js';
 import { createDeskRouter } from '../src/desk-routes.js';
 
 const password = 'correct horse battery staple';
@@ -11,12 +12,13 @@ const password = 'correct horse battery staple';
 async function harness(t, { cookieSecure = false } = {}) {
   const store = new Store(':memory:');
   const desk = new DeskStore(store);
+  const workspace = new WorkspaceStore(desk);
   const admin = await desk.ensureAdmin({ name: 'Alex Admin', email: 'admin@example.com', password });
   const technician = await desk.createTechnician({ name: 'Taylor Tech', email: 'tech@example.com', password, role: 'technician' });
   const worker = { wakeCalls: 0, accept(message) { return store.accept(message); }, wake() { this.wakeCalls++; } };
-  const config = { cookieSecure, bookstack: { publicUrl: 'https://wiki.example.com' } };
+  const config = { cookieSecure };
   const app = express();
-  app.use('/api/desk', createDeskRouter({ desk, store, worker, config }));
+  app.use('/api/desk', createDeskRouter({ desk, workspace, store, worker, config }));
   const server = app.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const url = `http://127.0.0.1:${server.address().port}/api/desk`;
@@ -58,7 +60,7 @@ test('dashboard requires a session and sign-in issues an HttpOnly strict cookie 
   assert.match(cookie, /Path=\//);
   assert.ok(session.csrfToken.length >= 32);
   assert.equal(session.body.user.role, 'admin');
-  assert.equal(session.body.bookstackUrl, 'https://wiki.example.com');
+  assert.equal(session.body.bookstackUrl, undefined);
   assert.doesNotMatch(JSON.stringify(session.body), /password_hash|tokenSecret|adminToken/);
   assert.equal((await request('/session', { session })).body.user.email, 'admin@example.com');
   const dashboard = await request('/dashboard', { session });
@@ -209,17 +211,18 @@ test('saved responses are readable by technicians but only administrators can ma
   assert.equal((await request(`/responses/${created.body.id}`, { method: 'PATCH', session: admin, body: { title: 'Changed', unexpected: true } })).status, 400);
 });
 
-test('technicians can queue validated manual asset links without overwriting ticket content', async t => {
+test('technicians link native assets immediately without overwriting ticket content', async t => {
   const { request, login, ticket, desk, worker } = await harness(t);
   const initial = ticket();
   const session = await login('tech@example.com');
   assert.equal((await request(`/tickets/${initial.key}/assets`, { method: 'POST', session, csrf: false, body: { ref: 'PC-88' } })).status, 403);
   const queued = await request(`/tickets/${initial.key}/assets`, { method: 'POST', session, body: { ref: ' pc-88 ' } });
-  assert.equal(queued.status, 202);
-  assert.equal(worker.wakeCalls, 1);
+  assert.equal(queued.status, 201);
+  assert.equal(worker.wakeCalls, 0);
   const detail = desk.getTicket(initial.key);
   assert.equal(detail.description, initial.description);
-  assert.ok(detail.pending_asset_links.some(link => link.ref === 'PC-88'));
+  const visible = await request(`/tickets/${initial.key}`, { session });
+  assert.ok(visible.body.assets.some(asset => asset.ref === 'PC-88'));
   for (const ref of ['', 'X'.repeat(65), '<script>', 'PC-88/../private']) {
     assert.equal((await request(`/tickets/${initial.key}/assets`, { method: 'POST', session, body: { ref } })).status, 400);
   }

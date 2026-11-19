@@ -224,7 +224,8 @@ export class DeskStore {
     const active = ACTIVE.includes(row.status), timestamp = Date.now();
     const responseOverdue = active && !row.first_response_at && Date.parse(row.response_due_at) < timestamp;
     const resolutionOverdue = active && Date.parse(row.resolution_due_at) < timestamp;
-    return { ...row, assignee: row.assignee_id ? this.user(row.assignee_id) : null,
+    const { page_id, page_url, ...native } = row;
+    return { ...native, assignee: row.assignee_id ? this.user(row.assignee_id) : null,
       is_overdue: responseOverdue || resolutionOverdue, response_overdue: responseOverdue,
       resolution_overdue: resolutionOverdue };
   }
@@ -232,27 +233,9 @@ export class DeskStore {
     this.initializeRows();
     const ticket = this.decorate(this.db.prepare('SELECT * FROM tickets WHERE key=?').get(key));
     if (!ticket) return null;
-    const sync = this.db.prepare('SELECT last_error FROM ticket_sync WHERE ticket_key=?').get(key);
-    const mirror = this.db.prepare(`SELECT state,last_error FROM messages WHERE ticket_key=? AND state!='done'
-      ORDER BY CASE state WHEN 'failed' THEN 0 WHEN 'processing' THEN 1 ELSE 2 END,rowid LIMIT 1`).get(key);
-    return { ...ticket, sync: { pending: Boolean(sync || mirror) || ticket.page_id <= 0,
-      state: mirror?.state || (sync || ticket.page_id <= 0 ? 'pending' : 'done'),
-      error: mirror?.last_error ?? sync?.last_error ?? null },
+    return { ...ticket,
       notes: this.db.prepare('SELECT * FROM ticket_notes WHERE ticket_key=? ORDER BY created_at,rowid').all(key),
-      events: this.db.prepare('SELECT * FROM ticket_events WHERE ticket_key=? ORDER BY created_at,rowid').all(key),
-      assets: this.db.prepare('SELECT ref,page_id AS id,url FROM ticket_assets WHERE ticket_key=? ORDER BY ref').all(key),
-      pending_asset_links: this.db.prepare('SELECT ref,attempts,last_error AS error,created_at,actor_name FROM manual_asset_links WHERE ticket_key=? ORDER BY created_at,ref').all(key),
-      related_tickets: this.db.prepare(`WITH related_keys AS (
-          SELECT key FROM tickets WHERE requester=? COLLATE NOCASE AND key<>?
-          UNION
-          SELECT theirs.ticket_key FROM ticket_assets mine JOIN ticket_assets theirs ON theirs.ref=mine.ref
-            WHERE mine.ticket_key=? AND theirs.ticket_key<>?
-        ) SELECT t.key,t.subject,t.status,t.resolution,t.requester FROM tickets t
-        JOIN related_keys r ON r.key=t.key
-        ORDER BY CASE WHEN EXISTS (SELECT 1 FROM ticket_assets mine JOIN ticket_assets theirs ON theirs.ref=mine.ref
-          WHERE mine.ticket_key=? AND theirs.ticket_key=t.key) THEN 0 ELSE 1 END,
-          CASE WHEN t.status IN ('resolved','closed') THEN 0 ELSE 1 END,t.updated_at DESC,t.key LIMIT 8`)
-        .all(ticket.requester, key, key, key, key) };
+      events: this.db.prepare('SELECT * FROM ticket_events WHERE ticket_key=? ORDER BY created_at,rowid').all(key) };
   }
   listTickets({ search = '', status, priority, assignee, category, view, sort = 'newest', limit = 100, offset = 0 } = {}) {
     this.initializeRows();
@@ -327,7 +310,6 @@ export class DeskStore {
       }
       if (values.resolution !== row.resolution) this.event(key, 'resolution', values.resolution || 'Resolution summary cleared', actor);
       if (values.first_response_at !== row.first_response_at) this.event(key, 'response', 'First response marked complete', actor);
-      this.queueSync(key);
       return this.getTicket(key);
     });
   }
@@ -361,13 +343,6 @@ export class DeskStore {
     return this.transaction(() => {
       this.initializeRows();
       this.db.prepare('INSERT INTO desk_receipts (receipt_id,ticket_key) VALUES (?,?)').run(receiptId, key);
-      for (const rawRef of message.assetRefs ?? []) {
-        const ref = String(rawRef).trim().toUpperCase();
-        if (!ref || ref.length > 120) continue;
-        if (!this.db.prepare('SELECT 1 FROM ticket_assets WHERE ticket_key=? AND ref=?').get(key, ref)) {
-          this.db.prepare('INSERT OR IGNORE INTO ticket_asset_recovery (ticket_key,ref) VALUES (?,?)').run(key, ref);
-        }
-      }
       if (!isReply) {
         this.db.prepare('UPDATE tickets SET description=CASE WHEN description=\'\' THEN ? ELSE description END,requester_name=CASE WHEN requester_name=\'\' THEN ? ELSE requester_name END,source=? WHERE key=?').run(body, name, source === 'manual' ? 'manual' : 'email', key);
         const original = this.db.prepare('SELECT created_at,version FROM tickets WHERE key=?').get(key);
@@ -395,14 +370,8 @@ export class DeskStore {
         this.event(key, 'email', 'Email update received', { name: sender });
       }
       if (!migrate) this.db.prepare('UPDATE tickets SET updated_at=?,version=version+1 WHERE key=?').run(now(), key);
-      this.queueSync(key);
       return includeDetails ? this.getTicket(key) : this.store.ticket(key);
     });
-  }
-  listAssets() {
-    return this.db.prepare(`SELECT a.ref,a.page_id AS id,a.url,COUNT(DISTINCT a.ticket_key) AS ticket_count,
-      MAX(t.updated_at) AS last_activity FROM ticket_assets a JOIN tickets t ON t.key=a.ticket_key
-      GROUP BY a.ref,a.page_id,a.url ORDER BY last_activity DESC,a.ref`).all();
   }
   listResponses({ includeInactive = false } = {}) {
     return this.db.prepare(`SELECT id,title,body,active,updated_at FROM response_templates ${includeInactive ? '' : 'WHERE active=1'} ORDER BY title COLLATE NOCASE,id`).all()
@@ -424,71 +393,6 @@ export class DeskStore {
     const active = fields.active ?? Boolean(original.active);
     this.db.prepare('UPDATE response_templates SET title=?,body=?,active=?,updated_at=?,actor_id=?,actor_name=? WHERE id=?').run(title, body, active ? 1 : 0, now(), actor?.id ?? null, actorName(actor), id);
     return { id, title, body, active, updated_at: this.db.prepare('SELECT updated_at FROM response_templates WHERE id=?').get(id).updated_at };
-  }
-  queueAssetLink(key, value, actor) {
-    if (!this.db.prepare('SELECT 1 FROM tickets WHERE key=?').get(key)) throw error('Ticket not found.', 404);
-    if (typeof value !== 'string') throw error('Enter a valid asset identifier.');
-    const ref = value.trim().toUpperCase();
-    if (!/^[A-Z0-9][A-Z0-9._-]{0,63}$/.test(ref)) throw error('Asset identifiers must use 1–64 letters, numbers, dots, underscores, or hyphens.');
-    if (this.db.prepare('SELECT 1 FROM ticket_assets WHERE ticket_key=? AND ref=?').get(key, ref)) return { queued: false, linked: true, ref };
-    this.db.prepare('INSERT OR IGNORE INTO manual_asset_links (ticket_key,ref,actor_id,actor_name,created_at) VALUES (?,?,?,?,?)').run(key, ref, actor?.id ?? null, actorName(actor), now());
-    return { queued: true, ref };
-  }
-  pendingAssetLinks(timestamp = Date.now()) {
-    return this.db.prepare(`SELECT a.ticket_key AS key,a.ref,a.actor_id,a.actor_name FROM manual_asset_links a
-      JOIN tickets t ON t.key=a.ticket_key WHERE a.next_attempt<=? AND t.page_id>0
-      ORDER BY a.created_at,a.rowid LIMIT 10`).all(timestamp)
-      .map(row => ({ key: row.key, ref: row.ref, actor: { id: row.actor_id, name: row.actor_name } }));
-  }
-  completeAssetLink(key, ref, asset) {
-    return this.transaction(() => {
-      const pending = this.db.prepare('SELECT * FROM manual_asset_links WHERE ticket_key=? AND ref=?').get(key, ref);
-      if (!pending) return this.getTicket(key);
-      this.addAssets(key, [{ ...asset, ref }]);
-      this.event(key, 'asset_link', `Linked asset ${ref}`, { id: pending.actor_id, name: pending.actor_name });
-      this.db.prepare('UPDATE tickets SET updated_at=?,version=version+1 WHERE key=?').run(now(), key);
-      this.db.prepare('DELETE FROM manual_asset_links WHERE ticket_key=? AND ref=?').run(key, ref);
-      return this.getTicket(key);
-    });
-  }
-  failAssetLink(key, ref, failure) {
-    const pending = this.db.prepare('SELECT attempts FROM manual_asset_links WHERE ticket_key=? AND ref=?').get(key, ref);
-    if (!pending) return;
-    const attempts = pending.attempts + 1;
-    const summary = typeof failure?.safeMessage === 'string' ? failure.safeMessage.slice(0, 400) : 'Asset linking failed; check BookStack connectivity and API permissions.';
-    this.db.prepare('UPDATE manual_asset_links SET attempts=?,next_attempt=?,last_error=? WHERE ticket_key=? AND ref=?')
-      .run(attempts, Date.now() + Math.min(300000, 1000 * 2 ** Math.min(attempts, 10)), summary, key, ref);
-  }
-  pendingAssetRecovery(timestamp = Date.now()) {
-    return this.db.prepare(`SELECT r.ticket_key AS key,r.ref FROM ticket_asset_recovery r
-      JOIN tickets t ON t.key=r.ticket_key WHERE r.next_attempt<=? AND t.page_id>0
-      AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.ticket_key=r.ticket_key AND m.state!='done')
-      ORDER BY r.rowid LIMIT 10`).all(timestamp);
-  }
-  deferAssetRecovery(key, ref) {
-    this.db.prepare('UPDATE ticket_asset_recovery SET next_attempt=? WHERE ticket_key=? AND ref=?').run(Date.now() + 300000, key, ref);
-  }
-  queueSync(key) {
-    const ticket = this.db.prepare('SELECT version FROM tickets WHERE key=?').get(key);
-    if (!ticket) throw error('Ticket not found.', 404);
-    this.db.prepare(`INSERT INTO ticket_sync (ticket_key,version,queued_at) VALUES (?,?,?)
-      ON CONFLICT(ticket_key) DO UPDATE SET version=excluded.version,attempts=0,next_attempt=0,last_error=NULL,queued_at=excluded.queued_at`).run(key, ticket.version, now());
-  }
-  pendingSync(timestamp = Date.now()) {
-    return this.db.prepare(`SELECT s.ticket_key,s.version FROM ticket_sync s JOIN tickets t ON t.key=s.ticket_key
-      WHERE s.next_attempt<=? AND t.page_id>0 ORDER BY s.queued_at LIMIT 10`).all(timestamp)
-      .map(row => ({ ...this.getTicket(row.ticket_key), version: row.version }));
-  }
-  markSynced(key, version) {
-    return this.db.prepare('DELETE FROM ticket_sync WHERE ticket_key=? AND version=?').run(key, version).changes > 0;
-  }
-  failSync(key, failure) {
-    const row = this.db.prepare('SELECT attempts FROM ticket_sync WHERE ticket_key=?').get(key);
-    if (!row) return;
-    const attempts = row.attempts + 1;
-    const summary = typeof failure?.safeMessage === 'string' ? failure.safeMessage.slice(0, 400) : 'BookStack metadata synchronization failed; check connectivity and API permissions.';
-    this.db.prepare('UPDATE ticket_sync SET attempts=?,next_attempt=?,last_error=? WHERE ticket_key=?')
-      .run(attempts, Date.now() + Math.min(300000, 1000 * 2 ** Math.min(attempts, 10)), summary, key);
   }
   dashboard() {
     this.initializeRows();

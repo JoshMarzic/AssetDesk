@@ -8,12 +8,6 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const path = resolve(root, '.env');
 let contents = existsSync(path) ? readFileSync(path, 'utf8') : readFileSync(resolve(root, '.env.example'), 'utf8');
 const values = {
-  BOOKSTACK_APP_KEY: `base64:${randomBytes(32).toString('base64')}`,
-  DB_PASSWORD: randomBytes(24).toString('hex'),
-  DB_ROOT_PASSWORD: randomBytes(24).toString('hex'),
-  BOOKSTACK_TOKEN_ID: randomBytes(20).toString('hex'),
-  BOOKSTACK_TOKEN_SECRET: randomBytes(20).toString('hex'),
-  BOOKSTACK_ADMIN_PASSWORD: randomBytes(24).toString('hex'),
   INBOUND_EMAIL_TOKEN: randomBytes(32).toString('hex'),
   ADMIN_TOKEN: randomBytes(32).toString('hex'),
   DASHBOARD_ADMIN_EMAIL: 'admin@assetdesk.local',

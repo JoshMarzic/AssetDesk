@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Creates labeled development tickets and reports user-visible latency separately
-// from background BookStack work. Never use this to load-test production.
+// Creates three labeled development tickets and measures durable local intake.
+// Never use this to load-test production.
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 try { process.loadEnvFile('.env'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -22,7 +22,7 @@ for (let sample = 0; sample < 3; sample++) {
   const acceptedMs = performance.now() - started;
   let key = receipt.ticketKey;
   let availableMs;
-  let mirroredMs;
+  let completedMs;
   for (let i = 0; i < 1200; i++) {
     if (key && availableMs === undefined) {
       const ticket = await fetch(`${base}/api/desk/tickets/${key}`, { headers });
@@ -31,14 +31,14 @@ for (let sample = 0; sample < 3; sample++) {
       availableMs = performance.now() - started;
     }
     const status = await (await fetch(`${base}${receipt.statusUrl}`, { headers })).json();
-    assert.notEqual(status.state, 'failed', status.error || 'Remote synchronization failed');
+    assert.notEqual(status.state, 'failed', status.error || 'Local intake failed');
     key ||= status.ticketKey;
-    if (status.state === 'done') { mirroredMs = performance.now() - started; break; }
+    if (status.state === 'done') { completedMs = performance.now() - started; break; }
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  assert.ok(mirroredMs !== undefined, 'Remote synchronization must eventually complete');
+  assert.ok(completedMs !== undefined, 'Local processing must complete');
   if (availableMs === undefined) availableMs = performance.now() - started;
-  timings.push({ acceptedMs: Math.round(acceptedMs), ticketAvailableMs: Math.round(availableMs), bookstackSyncMs: Math.round(mirroredMs) });
+  timings.push({ acceptedMs: Math.round(acceptedMs), ticketAvailableMs: Math.round(availableMs), processingCompletedMs: Math.round(completedMs) });
 }
 await fetch(`${base}/api/desk/logout`, { method: 'POST', headers, body: '{}' });
 console.log(JSON.stringify({ samples: timings }, null, 2));

@@ -4,6 +4,8 @@ const drawer = $('#ticket-drawer');
 const modal = $('#modal');
 const statusLabels = { open: 'Open', in_progress: 'In progress', waiting: 'Waiting', resolved: 'Resolved', closed: 'Closed' };
 const priorityLabels = { low: 'Low', normal: 'Normal', high: 'High', urgent: 'Urgent' };
+const assetTypeLabels = { personnel: 'Personnel', pc: 'PC', laptop: 'Laptop', server: 'Server', printer: 'Printer', network: 'Network equipment', peripheral: 'Peripheral', hardware: 'Hardware', other: 'Other' };
+const assetStatusLabels = { active: 'Active', spare: 'Spare', repair: 'In repair', retired: 'Retired', unverified: 'Unverified' };
 const categoryLabels = { general: 'General', hardware: 'Hardware', software: 'Software', network: 'Network', access: 'Access' };
 const icons = {
   ticket: '<path d="M4 4h16v5a3 3 0 0 0 0 6v5H4v-5a3 3 0 0 0 0-6z"/><path d="M14 5v2m0 4v2m0 4v2"/>',
@@ -63,7 +65,7 @@ function due(ticket, detailed = false) {
   return `<span class="due ${diff < 0 ? 'overdue' : ''}" title="${esc(shortDate(value))}">${diff < 0 ? `${duration} overdue` : `${detailed ? 'Due in ' : ''}${duration}${detailed ? '' : ' left'}`}</span>`;
 }
 function pill(status) { return `<span class="pill ${Object.hasOwn(statusLabels, status) ? status : 'open'}">${esc(statusLabels[status] || cap(status))}</span>`; }
-const state = { session: null, current: 'overview', tickets: [], total: 0, technicians: [], dashboard: null, assets: [], responses: [], view: 'all', search: '', status: '', priority: '', category: '', assignee: '', sort: 'newest', offset: 0, filtersOpen: false, ticket: null, loading: false, generation: 0, busy: false, knowledge: null, knowledgeSearch: '', knowledgeChapter: '', knowledgeOffset: 0, article: null, articleEditing: false, articleDirty: false, articleSaving: false, knowledgeGeneration: 0 };
+const state = { session: null, current: 'overview', tickets: [], total: 0, technicians: [], dashboard: null, assets: [], responses: [], view: 'all', search: '', status: '', priority: '', category: '', assignee: '', sort: 'newest', offset: 0, filtersOpen: false, ticket: null, loading: false, generation: 0, busy: false, knowledge: null, knowledgeSearch: '', knowledgeCategory: '', knowledgeOffset: 0, article: null, articleEditing: false, articleDirty: false, articleSaving: false, knowledgeGeneration: 0, asset: null, assetTarget: null, assetSearch: '', assetType: '', assetCategory: '', assetOffset: 0, assetTotal: 0, assetGeneration: 0, categories: [] };
 
 async function api(path, { method = 'GET', body } = {}) {
   const response = await fetch(path, { method, credentials: 'same-origin', headers: { Accept: 'application/json', ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(method !== 'GET' && state.session?.csrfToken ? { 'X-CSRF-Token': state.session.csrfToken } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
@@ -89,19 +91,19 @@ function loadingPanel() { return `<div class="panel"><div class="table-loading">
 function emptyState(title, description, { symbol = 'inbox', action = '' } = {}) { return `<div class="empty-state"><span class="empty-icon">${icon(symbol)}</span><h3>${esc(title)}</h3><p>${esc(description)}</p>${action}</div>`; }
 
 function renderLogin(error = '') {
-  app.innerHTML = `<main class="login-page"><section class="login-story"><div class="brand"><span class="brand-mark">${icon('ticket')}</span>AssetDesk</div><div class="login-pitch"><div class="eyebrow">A little clarity goes a long way</div><h1>Great support.<br><span>All in one place.</span></h1><p>A calmer home for your IT tickets, your team, and the equipment that keeps everyone moving.</p><div class="login-features"><div class="login-feature">${icon('inbox')}A clear queue. Nothing slips through.</div><div class="login-feature">${icon('users')}The right technician for every ticket.</div><div class="login-feature">${icon('laptop')}Every asset, with its full support story.</div></div></div><div class="login-story-foot">Thoughtful tools for the people behind the help desk.</div></section><section class="login-form-wrap"><div class="login-form-card"><div class="login-mini-logo">${icon('ticket')}</div><h2>Welcome back.</h2><p class="login-intro">Sign in to your support workspace.<br>Let’s make someone’s day a little easier.</p><form id="login-form" class="login-form"><div class="field"><label for="login-email">Email address</label><input class="input" id="login-email" name="email" type="email" autocomplete="username" required placeholder="you@company.com"></div><div class="field"><label for="login-password">Password</label><input class="input" id="login-password" name="password" type="password" autocomplete="current-password" required placeholder="Enter your password"></div><div class="field-error" role="alert">${esc(error)}</div><button class="btn primary full" type="submit">Sign in ${icon('arrow')}</button></form><div class="login-security">${icon('lock')}Your workspace. Your team’s eyes only.</div><p class="login-help">Need access? Ask your workspace administrator to create a technician account. Dashboard accounts are managed separately from BookStack.</p></div></section></main>`;
+  app.innerHTML = `<main class="login-page"><section class="login-story"><div class="brand"><span class="brand-mark">${icon('ticket')}</span>AssetDesk</div><div class="login-pitch"><div class="eyebrow">A little clarity goes a long way</div><h1>Great support.<br><span>All in one place.</span></h1><p>A calmer home for your IT tickets, your team, and the equipment that keeps everyone moving.</p><div class="login-features"><div class="login-feature">${icon('inbox')}A clear queue. Nothing slips through.</div><div class="login-feature">${icon('users')}The right technician for every ticket.</div><div class="login-feature">${icon('laptop')}Every asset, with its full support story.</div></div></div><div class="login-story-foot">Thoughtful tools for the people behind the help desk.</div></section><section class="login-form-wrap"><div class="login-form-card"><div class="login-mini-logo">${icon('ticket')}</div><h2>Welcome back.</h2><p class="login-intro">Sign in to your support workspace.<br>Let’s make someone’s day a little easier.</p><form id="login-form" class="login-form"><div class="field"><label for="login-email">Email address</label><input class="input" id="login-email" name="email" type="email" autocomplete="username" required placeholder="you@company.com"></div><div class="field"><label for="login-password">Password</label><input class="input" id="login-password" name="password" type="password" autocomplete="current-password" required placeholder="Enter your password"></div><div class="field-error" role="alert">${esc(error)}</div><button class="btn primary full" type="submit">Sign in ${icon('arrow')}</button></form><div class="login-security">${icon('lock')}Your workspace. Your team’s eyes only.</div><p class="login-help">Need access? Ask your workspace administrator to create a technician account. Your administrator manages access to this workspace and its knowledge categories.</p></div></section></main>`;
   $('#login-form').addEventListener('submit', async event => {
     event.preventDefault();
     const form = event.currentTarget; const button = $('button[type=submit]', form); const values = new FormData(form);
     button.disabled = true; button.textContent = 'Signing in…';
-    try { state.session = await api('/api/desk/login', { method: 'POST', body: { email: values.get('email'), password: values.get('password') } }); const initial = location.hash.slice(1); if (['overview', 'tickets', 'my-tickets', 'assets', 'team', 'knowledge'].includes(initial)) state.current = initial; renderShell(); const articleMatch = location.hash.match(/^#knowledge\/article\/(\d+)$/); if (articleMatch) await openArticle(articleMatch[1]); else await refresh(); }
+    try { state.session = await api('/api/desk/login', { method: 'POST', body: { email: values.get('email'), password: values.get('password') } }); const initial = location.hash.slice(1); if (['overview', 'tickets', 'my-tickets', 'assets', 'team', 'knowledge', 'actions'].includes(initial)) state.current = initial; renderShell(); await restoreLocation(); }
     catch (error) { $('.field-error', form).textContent = error.message; button.disabled = false; button.innerHTML = `Sign in ${icon('arrow')}`; }
   });
 }
 function navItem(view, label, symbol, count) { return `<button class="nav-item${state.current === view ? ' active' : ''}" data-nav="${view}" ${state.current === view ? 'aria-current="page"' : ''}>${icon(symbol)}<span>${label}</span>${count !== undefined ? `<span class="nav-count">${count}</span>` : ''}</button>`; }
 function renderShell() {
   const user = state.session.user;
-  app.innerHTML = `<div class="shell"><button class="sidebar-mobile-overlay" aria-label="Close navigation" data-action="menu"></button><aside class="sidebar" aria-label="Main navigation"><a href="#overview" class="brand" data-nav="overview"><span class="brand-mark">${icon('ticket')}</span>AssetDesk</a><div class="workspace-switch"><span class="workspace-icon">IT</span><div class="workspace-label">IT workspace<small>Support, together.</small></div></div><div class="sidebar-group-label">Workspace</div><nav class="nav-group">${navItem('overview', 'Overview', 'grid')}${navItem('tickets', 'All tickets', 'ticket', state.dashboard?.stats?.open ?? 0)}${navItem('my-tickets', 'My tickets', 'inbox')}${navItem('assets', 'Assets', 'laptop')}</nav><div class="sidebar-group-label">Organization</div><nav class="nav-group">${navItem('team', 'Team', 'users')}${navItem('knowledge', 'Knowledge base', 'book')}</nav><div class="sidebar-bottom"><div class="sidebar-note">${icon('spark')}<strong>Context makes better support.</strong><p>Asset ownership and documentation, connected to every ticket.</p><button class="sidebar-knowledge-link" data-nav="knowledge">Explore knowledge base ${icon('arrow')}</button></div><div class="profile">${avatar(user.name)}<div><div class="profile-name">${esc(user.name)}</div><div class="profile-role">${esc(user.role === 'admin' ? 'Workspace admin' : 'Technician')}</div></div><button class="icon-button" data-action="logout" aria-label="Sign out" title="Sign out">${icon('logout')}</button></div></div></aside><header class="topbar"><button class="icon-button mobile-menu" data-action="menu" aria-label="Open navigation">${icon('menu')}</button><div class="breadcrumbs"><span class="workspace-breadcrumb muted">Workspace</span><span class="crumb-separator">${icon('chevron')}</span><span id="breadcrumb-current">Overview</span></div><form class="global-search" id="search-form" role="search">${icon('search')}<label class="sr-only" for="global-search">Search tickets</label><input id="global-search" type="search" placeholder="Search tickets, people, IDs…" value="${esc(state.search)}" autocomplete="off"><kbd>/</kbd></form><div class="topbar-divider"></div>${avatar(user.name)}</header><main class="main" id="main-content">${loadingPanel()}</main></div>`;
+  app.innerHTML = `<div class="shell"><button class="sidebar-mobile-overlay" aria-label="Close navigation" data-action="menu"></button><aside class="sidebar" aria-label="Main navigation"><a href="#overview" class="brand" data-nav="overview"><span class="brand-mark">${icon('ticket')}</span>AssetDesk</a><div class="workspace-switch"><span class="workspace-icon">IT</span><div class="workspace-label">IT workspace<small>Support, together.</small></div></div><div class="sidebar-group-label">Workspace</div><nav class="nav-group">${navItem('overview', 'Overview', 'grid')}${navItem('tickets', 'All tickets', 'ticket', state.dashboard?.stats?.open ?? 0)}${navItem('my-tickets', 'My tickets', 'inbox')}${navItem('assets', 'Assets', 'laptop')}${navItem('actions', 'Actions', 'spark')}</nav><div class="sidebar-group-label">Organization</div><nav class="nav-group">${navItem('team', 'Team', 'users')}${navItem('knowledge', 'Knowledge base', 'book')}</nav><div class="sidebar-bottom"><div class="sidebar-note">${icon('spark')}<strong>Context makes better support.</strong><p>Asset ownership and documentation, connected to every ticket.</p><button class="sidebar-knowledge-link" data-nav="knowledge">Explore knowledge base ${icon('arrow')}</button></div><div class="profile">${avatar(user.name)}<div><div class="profile-name">${esc(user.name)}</div><div class="profile-role">${esc(user.role === 'admin' ? 'Workspace admin' : 'Technician')}</div></div><button class="icon-button" data-action="logout" aria-label="Sign out" title="Sign out">${icon('logout')}</button></div></div></aside><header class="topbar"><button class="icon-button mobile-menu" data-action="menu" aria-label="Open navigation">${icon('menu')}</button><div class="breadcrumbs"><span class="workspace-breadcrumb muted">Workspace</span><span class="crumb-separator">${icon('chevron')}</span><span id="breadcrumb-current">Overview</span></div><form class="global-search" id="search-form" role="search">${icon('search')}<label class="sr-only" for="global-search">Search tickets</label><input id="global-search" type="search" placeholder="Search tickets, people, IDs…" value="${esc(state.search)}" autocomplete="off"><kbd>/</kbd></form><div class="topbar-divider"></div>${avatar(user.name)}</header><main class="main" id="main-content">${loadingPanel()}</main></div>`;
   $('#search-form').addEventListener('submit', event => { event.preventDefault(); runSearch(); });
   let searchTimer;
   $('#global-search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 350); });
@@ -114,9 +116,9 @@ function runSearch() {
   else refresh();
 }
 function navigate(view, clearSearch = true) {
-  if (!['overview', 'tickets', 'my-tickets', 'assets', 'team', 'knowledge'].includes(view)) return;
+  if (!['overview', 'tickets', 'my-tickets', 'assets', 'team', 'knowledge', 'actions'].includes(view)) return;
   if (!mayLeaveArticle()) return;
-  state.article = null; state.articleTarget = null; state.articleEditing = false; state.articleDirty = false;
+  state.article = null; state.articleTarget = null; state.articleEditing = false; state.articleDirty = false; state.asset = null; state.assetTarget = null;
   closeDialogs();
   state.current = view; state.view = 'all'; state.offset = 0; state.status = ''; state.priority = ''; state.category = ''; state.assignee = ''; state.filtersOpen = false;
   if (clearSearch) { state.search = ''; const input = $('#global-search'); if (input) input.value = ''; }
@@ -125,10 +127,12 @@ function navigate(view, clearSearch = true) {
   document.querySelectorAll('[data-nav]').forEach(button => { const active = button.dataset.nav === view; button.classList.toggle('active', active); if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); });
   refresh();
 }
-function currentTitle() { return ({ overview: 'Overview', tickets: 'All tickets', 'my-tickets': 'My tickets', assets: 'Assets', team: 'Team', knowledge: 'Knowledge base' })[state.current]; }
+function currentTitle() { return ({ overview: 'Overview', tickets: 'All tickets', 'my-tickets': 'My tickets', assets: 'Assets', team: 'Team', knowledge: 'Knowledge base', actions: 'Actions' })[state.current]; }
 async function refresh({ quiet = false } = {}) {
   if (!state.session) return;
   if (state.current === 'knowledge') { if (!state.article && !state.articleEditing) await loadKnowledge(); return; }
+  if (state.current === 'assets') { if (state.asset) await openAsset(state.asset.id, { quiet: true }); else await loadAssets(); return; }
+  if (state.current === 'actions') { renderActions(); return; }
   const generation = ++state.generation;
   if (!quiet && !state.dashboard) $('#main-content').innerHTML = loadingPanel();
   const params = new URLSearchParams({ view: state.view, sort: state.sort, limit: '20', offset: String(state.offset) });
@@ -148,6 +152,8 @@ async function refresh({ quiet = false } = {}) {
 }
 function renderContent() {
   if (state.current === 'knowledge') { renderKnowledge(); return; }
+  if (state.current === 'assets') { renderAssetInventory(); return; }
+  if (state.current === 'actions') { renderActions(); return; }
   $('#breadcrumb-current').textContent = currentTitle();
   document.title = `${currentTitle()} · AssetDesk`;
   const first = state.session.user.name.split(' ')[0];
@@ -159,7 +165,7 @@ function intakeBanner() {
   const counts = state.dashboard?.intake?.counts || [];
   const failed = Number(counts.find(c => c.state === 'failed')?.count || 0);
   const pending = counts.filter(c => ['pending', 'processing'].includes(c.state)).reduce((s, c) => s + Number(c.count || 0), 0);
-  return failed ? `<div class="intake-banner" role="status">${icon('alert')}<span>${failed} documentation sync${failed === 1 ? '' : 's'} need attention. Saved tickets remain available; an administrator can inspect failed intake receipts.</span></div>` : pending ? `<div class="intake-banner" role="status">${icon('clock')}<span>${pending} request${pending === 1 ? ' is' : 's are'} syncing documentation in the background. Saved tickets are ready to work on.</span></div>` : '';
+  return failed ? `<div class="intake-banner" role="status">${icon('alert')}<span>${failed} request${failed === 1 ? '' : 's'} need attention. An administrator can inspect the failed intake receipts.</span></div>` : pending ? `<div class="intake-banner" role="status">${icon('clock')}<span>${pending} request${pending === 1 ? ' is' : 's are'} being recorded. Saved tickets are ready to work on.</span></div>` : '';
 }
 function renderStats() {
   const stats = state.dashboard?.stats || {};
@@ -187,10 +193,7 @@ function renderActivity() {
   return `<section class="panel"><div class="panel-header"><div><h2 class="panel-title">Recent activity</h2><p class="panel-subtitle">The latest from your support desk.</p></div><span class="muted">${icon('activity')}</span></div>${activities.length ? `<div class="activity-list">${activities.map(event => `<div class="activity-item"><span class="activity-symbol">${icon(event.type === 'email' ? 'mail' : event.type === 'note' ? 'note' : event.type?.includes('resolv') ? 'circleCheck' : 'ticket')}</span><div class="activity-content"><strong>${esc(event.actor_name || 'AssetDesk')}</strong> ${esc(activitySummary(event))}${event.ticket_key ? `<button class="view-link activity-subject" data-ticket="${esc(event.ticket_key)}">${esc(event.ticket_subject || event.ticket_key)}</button>` : ''}<div class="activity-time">${ago(event.created_at)}</div></div></div>`).join('')}</div>` : '<p class="empty-small">Updates, assignments, and notes will appear here as your team gets to work.</p>'}</section>`;
 }
 function activitySummary(event) { return event.type === 'created' || event.type === 'ticket_created' ? 'created a ticket' : event.type === 'email' ? 'sent an email update' : event.type === 'note' ? 'added an internal note' : String(event.body || cap(event.type) || 'updated a ticket').slice(0, 110); }
-function renderAssets() {
-  const assets = state.assets;
-  return assets.length ? `<div class="asset-grid">${assets.map(asset => `<article class="asset-card"><div class="asset-card-top"><span class="asset-device">${icon('laptop')}</span><span class="role-badge">Asset record</span></div><h3>${esc(asset.ref || asset.name)}</h3><p>View and edit ownership, configuration, and lifecycle details right here.</p><div class="asset-card-foot"><span>${Number(asset.ticket_count || asset.tickets || 0)} linked ticket${Number(asset.ticket_count || asset.tickets || 0) === 1 ? '' : 's'}</span>${articleLink(asset, 'Open record', 'view-link')}</div></article>`).join('')}</div>` : `<section class="panel">${emptyState('Every asset has a story.', 'Mention an asset ID, such as LAPTOP-1042, in a ticket. Its linked record will appear here automatically.', { symbol: 'laptop', action: `<button class="btn" data-action="new-ticket">${icon('plus')}Create a ticket</button>` })}</section>`;
-}
+function renderAssets() { return renderAssetCards(state.assets); }
 function renderTeam() {
   const technicians = state.technicians;
   return `<section class="panel"><div class="panel-header"><div><h2 class="panel-title">Your support team<span class="count-badge">${technicians.length}</span></h2><p class="panel-subtitle">${state.session.user.role === 'admin' ? 'Manage workspace access and who can take the next ticket.' : 'The people making IT a little more human.'}</p></div></div><div class="table-scroll"><table class="team-table"><thead><tr><th scope="col">Team member</th><th scope="col" class="role-column">Role</th><th scope="col">Status</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${technicians.map(person => `<tr class="${person.active ? '' : 'inactive'}"><td><div class="person">${avatar(person.name, 'big')}<div><strong>${esc(person.name)}</strong><div class="team-email">${esc(person.email)}</div></div></div></td><td class="role-column"><span class="role-badge">${esc(person.role)}</span></td><td><span class="status-live${person.active ? '' : ' off'}">${person.active ? 'Active' : 'Inactive'}</span></td><td><div class="team-actions">${state.session.user.role === 'admin' ? `<button class="btn subtle" data-edit-technician="${esc(person.id)}" aria-label="Edit ${esc(person.name)}">Edit</button>` : ''}</div></td></tr>`).join('')}</tbody></table></div></section>`;
@@ -208,7 +211,7 @@ async function openTicket(key) {
   drawer.dataset.ticketKey = key;
   if (!drawer.open) drawer.showModal();
   drawer.innerHTML = `<div class="drawer-state"><span class="spinner"></span>Opening ticket…<button class="icon-button" data-action="close-drawer" aria-label="Close ticket details">${icon('close')}</button></div>`;
-  try { const [ticket, assets, responses] = await Promise.all([api(`/api/desk/tickets/${encodeURIComponent(key)}`), api('/api/desk/assets'), api('/api/desk/responses')]); state.ticket = ticket.ticket || ticket; state.assets = assets.assets || []; state.responses = responses.responses || []; if (drawer.open && drawer.dataset.ticketKey === key) { renderTicketDetail(); pollTicketMirror(key); } }
+  try { const [ticket, assets, responses] = await Promise.all([api(`/api/desk/tickets/${encodeURIComponent(key)}`), api('/api/desk/assets'), api('/api/desk/responses')]); state.ticket = ticket.ticket || ticket; state.assets = assets.assets || []; state.responses = responses.responses || []; if (drawer.open && drawer.dataset.ticketKey === key) { renderTicketDetail(); } }
   catch (error) { if (drawer.open && drawer.dataset.ticketKey === key) drawer.innerHTML = `<div class="drawer-state"><p>${esc(error.message)}</p><button class="btn" data-action="close-drawer">Close</button></div>`; }
 }
 function renderTicketDetail() {
@@ -216,11 +219,11 @@ function renderTicketDetail() {
   const assets = ticket.assets || [];
   const activity = [...(ticket.notes || []).map(note => ({ ...note, itemKind: 'note' })), ...(ticket.events || []).filter(event => !['note', 'email'].includes(event.type)).map(event => ({ ...event, itemKind: 'event' }))].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
   const allowedStatuses = ticket.status === 'closed' ? { closed: 'Closed', open: 'Reopen ticket' } : ticket.status === 'resolved' ? { resolved: 'Resolved', closed: 'Close ticket', open: 'Reopen ticket' } : { open: 'Open', in_progress: 'In progress', waiting: 'Waiting', resolved: 'Resolved' };
-  drawer.innerHTML = `<div class="drawer-top"><div class="drawer-breadcrumb">${icon('ticket')}<span>Tickets</span>${icon('chevron')}<span class="mono">${esc(ticket.key)}</span></div><div class="drawer-top-actions">${Number(ticket.page_id) > 0 ? `<button class="btn" data-article="${Number(ticket.page_id)}">Ticket documentation ${icon('book')}</button>` : ''}<button class="icon-button" data-action="close-drawer" aria-label="Close ticket details">${icon('close')}</button></div></div><div class="drawer-body"><section class="drawer-content"><div class="drawer-status-line">${pill(ticket.status)}<span class="pill ${Object.hasOwn(priorityLabels, ticket.priority) ? ticket.priority : 'normal'}">${esc(priorityLabels[ticket.priority] || 'Normal')} priority</span></div><h1>${esc(ticket.subject)}</h1><div class="requester-block">${avatar(ticket.requester_name || ticket.requester)}<div><strong>${esc(ticket.requester_name || ticket.requester)}</strong><small>${esc(ticket.requester)} · ${esc(ticket.source === 'manual' ? 'Manual request' : 'Email request')}</small></div></div>${renderMirrorBanner(ticket)}<h2 class="drawer-section-label">Description</h2><div class="ticket-description">${esc(ticket.description || 'No description was recorded for this ticket.')}</div>${renderAssetSection(ticket)}${renderRelatedTickets(ticket)}<div class="divider"></div><div class="activity-filter"><h2 class="drawer-section-label">Activity & notes</h2><span class="small muted">${activity.length} update${activity.length === 1 ? '' : 's'}</span></div><div class="ticket-activity">${activity.length ? activity.map(event => `<div class="ticket-activity-item">${avatar(event.actor_name || (event.kind === 'email' ? ticket.requester : 'AssetDesk'))}<div class="ticket-activity-main"><div class="ticket-activity-heading"><strong>${esc(event.actor_name || 'AssetDesk')}</strong>${event.itemKind === 'note' ? `<span class="email-tag">${event.kind === 'email' ? 'Email' : 'Internal note'}</span>` : ''}<time datetime="${esc(event.created_at)}" title="${esc(shortDate(event.created_at))}">${ago(event.created_at)}</time></div><div class="${event.itemKind === 'note' ? 'note-content' : 'activity-content'}">${esc(event.body || cap(event.type))}</div></div></div>`).join('') : '<p class="empty-small">Assignment changes, notes, and email updates will appear here.</p>'}</div><form class="note-composer" id="note-form"><div class="composer-label">${icon('lock')}Internal note <span class="muted">· visible to your team</span></div>${renderResponseTools()}<label class="sr-only" for="note-body">Internal note</label><textarea id="note-body" name="body" placeholder="Share context, an update, or your next steps…" required maxlength="20000"></textarea><div class="composer-bottom"><span>This does not send an email.</span><div class="composer-actions"><button class="btn" type="button" data-action="copy-response">${icon('note')}Copy response</button><button class="btn primary" type="submit">Add note</button></div></div></form></section><aside class="drawer-properties" aria-label="Ticket properties"><div class="eyebrow">Ticket details</div><form id="ticket-update" class="property-form"><div class="field"><label for="ticket-status">Status</label><select id="ticket-status" name="status">${options(allowedStatuses, ticket.status)}</select></div><div class="field"><label for="ticket-priority">Priority</label><select id="ticket-priority" name="priority">${options(priorityLabels, ticket.priority)}</select></div><div class="field"><label for="ticket-assignee">Assigned technician</label><select id="ticket-assignee" name="assignee_id"><option value="">Unassigned</option>${technicianOptions(ticket.assignee_id || ticket.assignee?.id, { includeInactive: true, historical: ticket.assignee })}</select></div><div class="field"><label for="ticket-category">Category</label><select id="ticket-category" name="category">${options(categoryLabels, ticket.category)}</select></div><div class="field resolution-field" id="resolution-field" hidden><label for="ticket-resolution">Resolution summary</label><textarea id="ticket-resolution" name="resolution" placeholder="What resolved this issue?" maxlength="10000"></textarea></div><div class="field-error" role="alert"></div><div class="property-actions"><button class="btn primary full" type="submit">Save changes</button>${ticket.assignee?.id !== state.session.user.id ? `<button class="btn full" type="button" data-action="assign-me">${icon('user')}Assign to me</button>` : ''}</div></form><div class="sla-box"><div class="sla-item"><div class="sla-label">${icon('clock')}First response</div><div class="sla-value${!ticket.first_response_at && new Date(ticket.response_due_at) < new Date() ? ' overdue' : ''}">${ticket.first_response_at ? `Recorded ${esc(shortDate(ticket.first_response_at))}` : esc(shortDate(ticket.response_due_at))}</div></div><div class="sla-item"><div class="sla-label">${icon('circleCheck')}Resolution target</div><div class="sla-value${!['resolved', 'closed'].includes(ticket.status) && new Date(ticket.resolution_due_at) < new Date() ? ' overdue' : ''}">${ticket.resolved_at ? `Resolved ${esc(shortDate(ticket.resolved_at))}` : esc(shortDate(ticket.resolution_due_at))}</div></div>${!ticket.first_response_at ? '<button class="btn full" type="button" data-action="first-response">Mark first response</button><p class="small muted">Record only after contacting the requester.</p>' : ''}</div>${ticket.sync?.pending && !mirrorIsPending(ticket) && ticket.sync.state !== 'failed' ? `<div class="sync-status">${icon('clock')}Documentation update pending.${ticket.sync.error ? ` ${esc(ticket.sync.error)}` : ''}</div>` : ''}<div class="drawer-created">Created ${esc(shortDate(ticket.created_at))}<br>Updated ${esc(shortDate(ticket.updated_at || ticket.created_at))}<br>Targets use elapsed hours, including weekends.</div></aside></div>`;
+  drawer.innerHTML = `<div class="drawer-top"><div class="drawer-breadcrumb">${icon('ticket')}<span>Tickets</span>${icon('chevron')}<span class="mono">${esc(ticket.key)}</span></div><div class="drawer-top-actions"><button class="icon-button" data-action="close-drawer" aria-label="Close ticket details">${icon('close')}</button></div></div><div class="drawer-body"><section class="drawer-content"><div class="drawer-status-line">${pill(ticket.status)}<span class="pill ${Object.hasOwn(priorityLabels, ticket.priority) ? ticket.priority : 'normal'}">${esc(priorityLabels[ticket.priority] || 'Normal')} priority</span></div><h1>${esc(ticket.subject)}</h1><div class="requester-block">${avatar(ticket.requester_name || ticket.requester)}<div><strong>${esc(ticket.requester_name || ticket.requester)}</strong><small>${esc(ticket.requester)} · ${esc(ticket.source === 'manual' ? 'Manual request' : 'Email request')}</small></div></div><h2 class="drawer-section-label">Description</h2><div class="ticket-description">${esc(ticket.description || 'No description was recorded for this ticket.')}</div>${renderAssetSection(ticket)}${renderRelatedTickets(ticket)}<div class="divider"></div><div class="activity-filter"><h2 class="drawer-section-label">Activity & notes</h2><span class="small muted">${activity.length} update${activity.length === 1 ? '' : 's'}</span></div><div class="ticket-activity">${activity.length ? activity.map(event => `<div class="ticket-activity-item">${avatar(event.actor_name || (event.kind === 'email' ? ticket.requester : 'AssetDesk'))}<div class="ticket-activity-main"><div class="ticket-activity-heading"><strong>${esc(event.actor_name || 'AssetDesk')}</strong>${event.itemKind === 'note' ? `<span class="email-tag">${event.kind === 'email' ? 'Email' : 'Internal note'}</span>` : ''}<time datetime="${esc(event.created_at)}" title="${esc(shortDate(event.created_at))}">${ago(event.created_at)}</time></div><div class="${event.itemKind === 'note' ? 'note-content' : 'activity-content'}">${esc(event.body || cap(event.type))}</div></div></div>`).join('') : '<p class="empty-small">Assignment changes, notes, and email updates will appear here.</p>'}</div><form class="note-composer" id="note-form"><div class="composer-label">${icon('lock')}Internal note <span class="muted">· visible to your team</span></div>${renderResponseTools()}<label class="sr-only" for="note-body">Internal note</label><textarea id="note-body" name="body" placeholder="Share context, an update, or your next steps…" required maxlength="20000"></textarea><div class="composer-bottom"><span>This does not send an email.</span><div class="composer-actions"><button class="btn" type="button" data-action="copy-response">${icon('note')}Copy response</button><button class="btn primary" type="submit">Add note</button></div></div></form></section><aside class="drawer-properties" aria-label="Ticket properties"><div class="eyebrow">Ticket details</div><form id="ticket-update" class="property-form"><div class="field"><label for="ticket-status">Status</label><select id="ticket-status" name="status">${options(allowedStatuses, ticket.status)}</select></div><div class="field"><label for="ticket-priority">Priority</label><select id="ticket-priority" name="priority">${options(priorityLabels, ticket.priority)}</select></div><div class="field"><label for="ticket-assignee">Assigned technician</label><select id="ticket-assignee" name="assignee_id"><option value="">Unassigned</option>${technicianOptions(ticket.assignee_id || ticket.assignee?.id, { includeInactive: true, historical: ticket.assignee })}</select></div><div class="field"><label for="ticket-category">Category</label><select id="ticket-category" name="category">${options(categoryLabels, ticket.category)}</select></div><div class="field resolution-field" id="resolution-field" hidden><label for="ticket-resolution">Resolution summary</label><textarea id="ticket-resolution" name="resolution" placeholder="What resolved this issue?" maxlength="10000"></textarea></div><div class="field-error" role="alert"></div><div class="property-actions"><button class="btn primary full" type="submit">Save changes</button>${ticket.assignee?.id !== state.session.user.id ? `<button class="btn full" type="button" data-action="assign-me">${icon('user')}Assign to me</button>` : ''}</div></form><div class="sla-box"><div class="sla-item"><div class="sla-label">${icon('clock')}First response</div><div class="sla-value${!ticket.first_response_at && new Date(ticket.response_due_at) < new Date() ? ' overdue' : ''}">${ticket.first_response_at ? `Recorded ${esc(shortDate(ticket.first_response_at))}` : esc(shortDate(ticket.response_due_at))}</div></div><div class="sla-item"><div class="sla-label">${icon('circleCheck')}Resolution target</div><div class="sla-value${!['resolved', 'closed'].includes(ticket.status) && new Date(ticket.resolution_due_at) < new Date() ? ' overdue' : ''}">${ticket.resolved_at ? `Resolved ${esc(shortDate(ticket.resolved_at))}` : esc(shortDate(ticket.resolution_due_at))}</div></div>${!ticket.first_response_at ? '<button class="btn full" type="button" data-action="first-response">Mark first response</button><p class="small muted">Record only after contacting the requester.</p>' : ''}</div><div class="drawer-created">Created ${esc(shortDate(ticket.created_at))}<br>Updated ${esc(shortDate(ticket.updated_at || ticket.created_at))}<br>Targets use elapsed hours, including weekends.</div></aside></div>`;
   $('#asset-link-form').addEventListener('submit', async event => {
     event.preventDefault(); const form = event.currentTarget; const ref = new FormData(form).get('ref').trim();
     const button = $('button[type=submit]', form); button.disabled = true;
-    try { const result = await api(`/api/desk/tickets/${encodeURIComponent(ticket.key)}/assets`, { method: 'POST', body: { ref } }); toast(result.linked ? 'This asset is already linked.' : 'Asset link queued. Its record will appear shortly.'); await reloadTicket({ preserveEdits: true }); if (result.queued) pollAssetLinks(ticket.key); }
+    try { const result = await api(`/api/desk/tickets/${encodeURIComponent(ticket.key)}/assets`, { method: 'POST', body: { ref } }); toast(result.duplicate ? 'This asset is already linked.' : 'Asset linked to this ticket.'); await reloadTicket({ preserveEdits: true }); }
     catch (error) { toast(error.message, true); button.disabled = false; }
   });
   $('#ticket-status').addEventListener('change', event => { const resolving = event.target.value === 'resolved' && ticket.status !== 'resolved'; $('#resolution-field').hidden = !resolving; $('#ticket-resolution').required = resolving; });
@@ -314,7 +317,7 @@ function openTechnician(person = null) {
 function renderAssetSection(ticket) {
   const assets = ticket.assets || [];
   const pending = ticket.pending_asset_links || [];
-  return `<h2 class="drawer-section-label">Affected assets</h2>${assets.length ? `<div class="asset-chips">${assets.map(asset => articleLink(asset, asset.ref, 'asset-chip')).join('')}</div>` : ''}${pending.map(link => `<div class="pending-asset">${icon('clock')}<span>${esc(link.ref)} · ${link.error ? esc(link.error) : 'Creating or linking its BookStack record…'}</span></div>`).join('')}<form class="asset-link-form" id="asset-link-form"><div class="field"><label for="link-asset-id">Asset ID</label><input class="input" id="link-asset-id" name="ref" list="known-assets" required maxlength="64" placeholder="Choose or enter an asset ID"><datalist id="known-assets">${state.assets.map(asset => `<option value="${esc(asset.ref)}"></option>`).join('')}</datalist></div><button class="btn" type="submit">${icon('plus')}Link asset</button></form>`;
+  return `<h2 class="drawer-section-label">Affected assets</h2>${assets.length ? `<div class="asset-chips">${assets.map(asset => articleLink(asset, asset.ref, 'asset-chip')).join('')}</div>` : ''}${pending.map(link => `<div class="pending-asset">${icon('clock')}<span>${esc(link.ref)} · ${link.error ? esc(link.error) : 'Linking the asset record…'}</span></div>`).join('')}<form class="asset-link-form" id="asset-link-form"><div class="field"><label for="link-asset-id">Asset ID</label><input class="input" id="link-asset-id" name="ref" list="known-assets" required maxlength="64" placeholder="Choose or enter an asset ID"><datalist id="known-assets">${state.assets.map(asset => `<option value="${esc(asset.ref)}"></option>`).join('')}</datalist></div><button class="btn" type="submit">${icon('plus')}Link asset</button></form>`;
 }
 function renderRelatedTickets(ticket) {
   const related = ticket.related_tickets || [];
@@ -381,6 +384,8 @@ function setPropertyDisabled(disabled) {
 }
 
 document.addEventListener('click', async event => {
+  const asset = event.target.closest('[data-asset]'); if (asset) { event.preventDefault(); openAsset(asset.dataset.asset); return; }
+  const editCategory = event.target.closest('[data-edit-category]'); if (editCategory) { openCategoryManager(editCategory.dataset.editCategory); return; }
   const article = event.target.closest('[data-article]'); if (article) { event.preventDefault(); openArticle(article.dataset.article); return; }
   const editResponse = event.target.closest('[data-edit-response]'); if (editResponse) { openResponseLibrary(state.responses.find(response => response.id === editResponse.dataset.editResponse), { refreshOnly: true }); return; }
   const archiveResponse = event.target.closest('[data-archive-response]'); if (archiveResponse) { try { await api(`/api/desk/responses/${encodeURIComponent(archiveResponse.dataset.archiveResponse)}`, { method: 'PATCH', body: { active: false } }); toast('Response template archived.'); await openResponseLibrary(null, { refreshOnly: true }); } catch (error) { toast(error.message, true); } return; }
@@ -408,7 +413,13 @@ document.addEventListener('click', async event => {
   else if (action === 'edit-article') editArticle(state.article);
   else if (action === 'knowledge-back') navigate('knowledge');
   else if (action === 'cancel-article') cancelArticleEditing();
-  else if (action === 'new-chapter') openChapterForm();
+  else if (action === 'manage-categories') openCategoryManager();
+  else if (action === 'new-category') openCategoryManager('new');
+  else if (action === 'new-asset') openAssetForm(null, state.knowledgeCategory || state.assetCategory);
+  else if (action === 'edit-asset') openAssetForm(state.asset);
+  else if (action === 'assets-back') navigate('assets');
+  else if (action === 'asset-prev') { state.assetOffset = Math.max(0, state.assetOffset - 30); loadAssets(); }
+  else if (action === 'asset-next') { state.assetOffset += 30; loadAssets(); }
   else if (action === 'knowledge-prev') { state.knowledgeOffset = Math.max(0, state.knowledgeOffset - 50); loadKnowledge(); }
   else if (action === 'knowledge-next') { state.knowledgeOffset += 50; loadKnowledge(); }
 });
@@ -422,7 +433,7 @@ document.addEventListener('keydown', event => {
 modal.addEventListener('close', () => { if (modal.dataset.responseLibrary === 'true' && drawer.open && state.ticket) reloadTicket({ preserveEdits: true }).catch(error => toast(error.message, true)); });
 for (const dialog of [modal, drawer]) dialog.addEventListener('click', event => { if (event.target === dialog) { const box = dialog.getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close(); } });
 async function boot() {
-  try { state.session = await api('/api/desk/session'); const initial = location.hash.slice(1); if (['overview', 'tickets', 'my-tickets', 'assets', 'team', 'knowledge'].includes(initial)) state.current = initial; renderShell(); const articleMatch = location.hash.match(/^#knowledge\/article\/(\d+)$/); if (articleMatch) await openArticle(articleMatch[1]); else await refresh(); }
+  try { state.session = await api('/api/desk/session'); const initial = location.hash.slice(1); if (['overview', 'tickets', 'my-tickets', 'assets', 'team', 'knowledge', 'actions'].includes(initial)) state.current = initial; renderShell(); await restoreLocation(); }
   catch (error) { if (!state.session) renderLogin(error.status === 401 ? '' : 'Your workspace could not be reached. Please try again.'); }
 }
 boot();
@@ -431,66 +442,75 @@ document.addEventListener('visibilitychange', () => { if (state.session && docum
 
 window.addEventListener('hashchange', () => {
   if (!state.session) return;
-  const articleMatch = location.hash.match(/^#knowledge\/article\/(\d+)$/);
-  if (articleMatch) { if ((String(state.article?.id) !== articleMatch[1] && String(state.articleTarget) !== articleMatch[1]) || state.current !== 'knowledge') openArticle(articleMatch[1]); return; }
+  const article = articleLocation();
+  if (article) {
+    if (state.current === 'knowledge' && state.article?.id === article.id) scrollArticleAnchor(article.id, article.anchor);
+    else if (state.current !== 'knowledge' || state.articleTarget !== article.id) openArticle(article.id, { anchor: article.anchor });
+    return;
+  }
+  const asset = location.hash.match(/^#assets\/([^/]+)$/);
+  if (asset) { if (state.current !== 'assets' || (state.asset?.id !== asset[1] && state.assetTarget !== asset[1])) openAsset(asset[1]); return; }
+  const ticket = location.hash.match(/^#tickets\/([^/]+)$/);
+  if (ticket) { if (!drawer.open || drawer.dataset.ticketKey !== decodeURIComponent(ticket[1])) { activateView('tickets'); refresh({ quiet: true }); openTicket(decodeURIComponent(ticket[1])); } return; }
   const view = location.hash.slice(1);
-  if (['overview', 'tickets', 'my-tickets', 'assets', 'team', 'knowledge'].includes(view) && (view !== state.current || state.article || state.articleEditing)) navigate(view);
+  if (['overview', 'tickets', 'my-tickets', 'assets', 'team', 'knowledge', 'actions'].includes(view) && (view !== state.current || state.article || state.articleEditing || state.asset)) navigate(view);
 });
 
-// Tickets are stored locally first. Documentation and asset creation never block
-// opening the ticket or assigning the next action to a technician.
-function articleId(record) {
-  const direct = Number(record?.id || record?.page_id);
-  if (Number.isSafeInteger(direct) && direct > 0) return direct;
-  const match = String(record?.url || record?.page_url || '').match(/\/link\/(\d+)(?:[/?#]|$)/);
-  return match ? Number(match[1]) : null;
-}
+// Native knowledge and inventory share the current AssetDesk session.
 function articleLink(record, label, className) {
-  const id = articleId(record);
-  return id ? `<button class="${className}" type="button" data-article="${id}">${icon(className === 'asset-chip' ? 'laptop' : 'book')}${esc(label)}${icon('chevron')}</button>` : `<span class="${className}">${icon('clock')}${esc(label)} · record syncing</span>`;
+  const id = record?.id || record?.asset_id || record?.ref;
+  return id ? `<button class="${className}" type="button" data-asset="${esc(id)}">${icon(record?.type === 'personnel' ? 'user' : 'laptop')}${esc(label)}${icon('chevron')}</button>` : `<span class="${className}">${esc(label)}</span>`;
 }
-function mirrorIsPending(ticket) {
-  const sync = ticket?.mirror || ticket?.sync;
-  return ticket && (!Number(ticket.page_id) || ['pending', 'processing'].includes(sync?.state) || (sync?.pending && sync?.state !== 'failed'));
+function ticketMirrorSignature(ticket) { return JSON.stringify([ticket?.key, ticket?.version, ticket?.assets, ticket?.pending_asset_links]); }
+function articleLocation() {
+  const match = location.hash.match(/^#knowledge\/article\/([A-Za-z0-9_-]+)(?:#([A-Za-z][A-Za-z0-9_-]{0,199}))?$/);
+  return match ? { id: match[1], anchor: match[2] || '' } : null;
 }
-function renderMirrorBanner(ticket) {
-  const sync = ticket.mirror || ticket.sync;
-  if (sync?.state === 'failed') return `<div class="ticket-mirror-banner warning" role="status">${icon('alert')}<span><strong>Your ticket is saved.</strong> Its documentation sync needs attention. You can continue working on the ticket.${sync.error ? ` ${esc(sync.error)}` : ''}</span></div>`;
-  return mirrorIsPending(ticket) ? `<div class="ticket-mirror-banner" role="status">${icon('clock')}<span>Ticket saved. Asset records and documentation are syncing in the background.</span></div>` : '';
+function scrollArticleAnchor(id, anchor) {
+  if (!anchor) return false;
+  const prefix = `doc-${id}-`;
+  const target = document.getElementById(anchor.startsWith(prefix) ? anchor : `${prefix}${anchor}`);
+  if (!target || !$('#knowledge-article-body')?.contains(target)) return false;
+  target.scrollIntoView({ block: 'start' });
+  return true;
 }
-function ticketMirrorSignature(ticket) {
-  return JSON.stringify([ticket?.key, ticket?.version, ticket?.page_id, ticket?.mirror, ticket?.sync,
-    (ticket?.assets || []).map(asset => [asset.ref, asset.id, asset.url]), ticket?.pending_asset_links]);
+async function restoreLocation() {
+  const article = articleLocation();
+  const asset = location.hash.match(/^#assets\/([^/]+)$/);
+  const ticket = location.hash.match(/^#tickets\/([^/]+)$/);
+  if (article) await openArticle(article.id, { anchor: article.anchor });
+  else if (asset) await openAsset(asset[1]);
+  else if (ticket) { activateView('tickets'); await refresh(); await openTicket(decodeURIComponent(ticket[1])); }
+  else await refresh();
 }
-let mirrorPollGeneration = 0;
-async function pollTicketMirror(key) {
-  const generation = ++mirrorPollGeneration;
-  for (let attempt = 0; attempt < 90; attempt++) {
-    if (!mirrorIsPending(state.ticket) || (state.ticket?.mirror || state.ticket?.sync)?.state === 'failed') return;
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    if (generation !== mirrorPollGeneration || !drawer.open || drawer.dataset.ticketKey !== key || state.ticket?.key !== key) return;
-    if (document.visibilityState !== 'visible' || modal.open || state.busy) continue;
-    try { await reloadTicket({ preserveEdits: true, quiet: true }); }
-    catch { return; }
-  }
-}
-
 function mayLeaveArticle() {
   if (state.articleSaving) { toast('Finishing the article save. Please wait a moment.'); return false; }
   return !state.articleEditing || !state.articleDirty || window.confirm('Discard your unsaved article changes?');
 }
-function activateKnowledgeNavigation() {
-  state.current = 'knowledge';
-  closeDialogs();
-  $('.shell')?.classList.remove('menu-open');
-  document.querySelectorAll('[data-nav]').forEach(button => {
-    const active = button.dataset.nav === 'knowledge'; button.classList.toggle('active', active);
-    if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
-  });
-  $('#breadcrumb-current').textContent = 'Knowledge base';
+function activateView(view) {
+  state.current = view; closeDialogs(); $('.shell')?.classList.remove('menu-open');
+  document.querySelectorAll('[data-nav]').forEach(button => { const active = button.dataset.nav === view; button.classList.toggle('active', active); if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); });
+  $('#breadcrumb-current').textContent = currentTitle();
 }
+function canEditCategory(category) {
+  if (!category) return false;
+  if (state.session.user.role === 'admin') return true;
+  if (typeof category.canEdit === 'boolean') return category.canEdit;
+  if (typeof category.can_edit === 'boolean') return category.can_edit;
+  return (category.editor_ids || []).includes(state.session.user.id) || (category.visibility === 'all' && category.allow_staff_edit !== false);
+}
+async function fetchCategories() {
+  const result = await api('/api/desk/knowledge/categories');
+  state.categories = result.categories || [];
+  return state.categories;
+}
+function categoryOptions(selected, { editable = false, assetOnly = false } = {}) {
+  return state.categories.filter(category => (!editable || canEditCategory(category)) && (!assetOnly || category.kind === 'assets')).map(category => `<option value="${esc(category.id)}"${category.id === selected ? ' selected' : ''}>${esc(category.name)}${category.visibility === 'restricted' ? ' · restricted' : ''}</option>`).join('');
+}
+function categoryBadge(category) { return category?.visibility === 'restricted' ? `<span class="permission-badge">${icon('lock')}Restricted</span>` : ''; }
 function knowledgeHeading() {
-  return `<div class="page-heading"><div><div class="eyebrow">Your team’s shared knowledge</div><h1>Knowledge base</h1><p>Answers, asset records, and practical guides. All in your workspace.</p></div><div class="heading-actions">${state.session.user.role === 'admin' ? `<button class="btn" data-action="new-chapter">${icon('plus')}New chapter</button>` : ''}<button class="btn primary" data-action="new-article">${icon('plus')}New article</button></div></div>`;
+  const editable = state.categories.some(canEditCategory);
+  return `<div class="page-heading"><div><div class="eyebrow">Your team’s shared knowledge</div><h1>Knowledge base</h1><p>Guides, people, and equipment. Organized here, with access controlled by category.</p></div><div class="heading-actions">${state.session.user.role === 'admin' ? `<button class="btn" data-action="manage-categories">${icon('shield')}Manage categories</button>` : ''}${editable ? `<button class="btn primary" data-action="new-article">${icon('plus')}New article</button>` : ''}</div></div>`;
 }
 async function loadKnowledge() {
   if (!state.session || state.current !== 'knowledge' || state.articleEditing) return;
@@ -498,11 +518,11 @@ async function loadKnowledge() {
   if (!state.knowledge) $('#main-content').innerHTML = `${knowledgeHeading()}${loadingPanel()}`;
   const params = new URLSearchParams({ limit: '50', offset: String(state.knowledgeOffset) });
   if (state.knowledgeSearch) params.set('search', state.knowledgeSearch);
-  if (state.knowledgeChapter) params.set('chapter_id', state.knowledgeChapter);
+  if (state.knowledgeCategory) params.set('category_id', state.knowledgeCategory);
   try {
     const knowledge = await api(`/api/desk/knowledge?${params}`);
     if (generation !== state.knowledgeGeneration || state.current !== 'knowledge' || state.articleEditing || state.article) return;
-    state.knowledge = knowledge;
+    state.knowledge = knowledge; state.categories = knowledge.categories || [];
     renderKnowledge();
   } catch (error) {
     if (generation !== state.knowledgeGeneration || state.current !== 'knowledge' || !state.session) return;
@@ -513,68 +533,73 @@ function renderKnowledge() {
   if (state.articleEditing) { renderArticleEditor(); return; }
   if (state.article) { renderArticle(); return; }
   $('#breadcrumb-current').textContent = 'Knowledge base'; document.title = 'Knowledge base · AssetDesk';
-  const knowledge = state.knowledge || { chapters: [], articles: [], total: 0 };
+  const knowledge = state.knowledge || { categories: [], articles: [], assets: [], total: 0 };
+  const selected = state.categories.find(category => category.id === state.knowledgeCategory);
+  const assetsArea = selected?.kind === 'assets';
   const wasSearching = document.activeElement?.id === 'knowledge-search';
   const selection = wasSearching ? document.activeElement.selectionStart : null;
-  $('#main-content').innerHTML = `${knowledgeHeading()}<div class="knowledge-layout"><aside class="panel knowledge-chapters" aria-label="Knowledge chapters"><h2>Browse chapters</h2><button class="knowledge-chapter${state.knowledgeChapter ? '' : ' active'}" data-knowledge-chapter="">${icon('book')}All articles</button>${(knowledge.chapters || []).map(chapter => `<button class="knowledge-chapter${String(chapter.id) === state.knowledgeChapter ? ' active' : ''}" data-knowledge-chapter="${Number(chapter.id)}">${icon('note')}${esc(chapter.name)}</button>`).join('')}<p class="knowledge-sidebar-note">Your AssetDesk account gives you access here. No separate sign-in.</p></aside><section class="panel knowledge-library" aria-label="Knowledge articles"><div class="knowledge-search-wrap"><form id="knowledge-search-form" role="search"><label class="sr-only" for="knowledge-search">Search knowledge base</label>${icon('search')}<input class="input" id="knowledge-search" type="search" placeholder="Search articles and how-to guides…" value="${esc(state.knowledgeSearch)}" autocomplete="off"><button class="btn" type="submit">Search</button></form><div class="small muted">${Number(knowledge.total || 0)} article${Number(knowledge.total || 0) === 1 ? '' : 's'}${state.knowledgeSearch ? ` matching “${esc(state.knowledgeSearch)}”` : ''}</div></div>${knowledge.articles?.length ? `<div class="knowledge-article-list">${knowledge.articles.map(article => `<button class="knowledge-article-card" data-article="${Number(article.id)}"><span class="article-card-icon">${icon('note')}</span><span><strong>${esc(article.name)}</strong><span class="article-excerpt">${esc(article.excerpt || 'Open this article to read the complete guide.')}</span><span class="article-updated">Updated ${esc(ago(article.updated_at))}</span></span>${icon('chevron')}</button>`).join('')}</div>` : emptyState(state.knowledgeSearch ? 'No matching articles.' : 'Share the answer once.', state.knowledgeSearch ? 'Try a different search or another chapter.' : 'Create troubleshooting guides, common answers, and team procedures your technicians can find right here.', { symbol: 'book', action: `<button class="btn" data-action="new-article">${icon('plus')}Create an article</button>` })}<div class="table-footer"><span>${knowledge.total ? `${state.knowledgeOffset + 1}–${Math.min(state.knowledgeOffset + knowledge.articles.length, knowledge.total)} of ${knowledge.total}` : 'Your knowledge grows with your team'}</span><div class="pagination"><button class="icon-button" data-action="knowledge-prev" aria-label="Previous articles"${state.knowledgeOffset === 0 ? ' disabled' : ''}>${icon('left')}</button><button class="icon-button" data-action="knowledge-next" aria-label="Next articles"${state.knowledgeOffset + 50 >= Number(knowledge.total || 0) ? ' disabled' : ''}>${icon('chevron')}</button></div></div></section></div>`;
+  const assetCategories = state.categories.filter(category => category.kind === 'assets');
+  const rows = (knowledge.articles || []).map(article => `<button class="knowledge-article-card" data-article="${esc(article.id)}"><span class="article-card-icon">${icon('note')}</span><span><strong>${esc(article.name)}</strong><span class="article-excerpt">${esc(article.excerpt || 'Open this article to read the complete guide.')}</span><span class="article-updated">Updated ${esc(ago(article.updated_at))}</span></span>${icon('chevron')}</button>`).join('');
+  const assetSection = assetsArea ? `<section class="native-kb-assets"><div class="panel-header"><div><h2 class="panel-title">${esc(selected.name)}</h2><p class="panel-subtitle">Personnel, hardware, and their complete ticket history.</p></div>${canEditCategory(selected) ? `<button class="btn" data-action="new-asset">${icon('plus')}New asset</button>` : ''}</div>${renderAssetCards(knowledge.assets || [], { compact: true })}<h2 class="drawer-section-label">Asset documentation</h2></section>` : !state.knowledgeCategory && assetCategories.length ? `<div class="knowledge-asset-areas">${assetCategories.map(category => `<button class="knowledge-assets-area" data-knowledge-category="${esc(category.id)}"><span class="asset-device">${icon('laptop')}</span><span><strong>${esc(category.name)}</strong><small>People, equipment, and linked support history</small></span>${icon('chevron')}</button>`).join('')}</div>` : '';
+  $('#main-content').innerHTML = `${knowledgeHeading()}<div class="knowledge-layout"><aside class="panel knowledge-chapters" aria-label="Knowledge categories"><h2>Browse categories</h2><button class="knowledge-chapter${state.knowledgeCategory ? '' : ' active'}" data-knowledge-category="">${icon('book')}All articles</button>${state.categories.map(category => `<button class="knowledge-chapter${category.id === state.knowledgeCategory ? ' active' : ''}" data-knowledge-category="${esc(category.id)}">${icon(category.kind === 'assets' ? 'laptop' : 'note')}<span>${esc(category.name)}</span>${category.visibility === 'restricted' ? icon('lock') : ''}</button>`).join('')}<p class="knowledge-sidebar-note">Only categories available to your account appear here.</p></aside><section class="panel knowledge-library" aria-label="Knowledge articles"><div class="knowledge-search-wrap"><form id="knowledge-search-form" role="search"><label class="sr-only" for="knowledge-search">Search knowledge base</label>${icon('search')}<input class="input" id="knowledge-search" type="search" placeholder="Search articles and how-to guides…" value="${esc(state.knowledgeSearch)}" autocomplete="off"><button class="btn" type="submit">Search</button></form><div class="native-category-title">${selected ? `<strong>${esc(selected.name)}</strong>${categoryBadge(selected)}` : '<span>All accessible articles</span>'}<span class="small muted">${Number(knowledge.total || 0)} article${Number(knowledge.total || 0) === 1 ? '' : 's'}</span></div></div>${assetSection}${rows ? `<div class="knowledge-article-list">${rows}</div>` : emptyState(state.knowledgeSearch ? 'No matching articles.' : assetsArea ? 'Document what keeps your team moving.' : 'Share the answer once.', state.knowledgeSearch ? 'Try another search or category.' : 'Create a guide, procedure, or troubleshooting note in a category your team can access.', { symbol: 'book', action: state.categories.some(canEditCategory) ? `<button class="btn" data-action="new-article">${icon('plus')}Create an article</button>` : '' })}<div class="table-footer"><span>${knowledge.total ? `${state.knowledgeOffset + 1}–${Math.min(state.knowledgeOffset + knowledge.articles.length, knowledge.total)} of ${knowledge.total}` : 'Your knowledge grows with your team'}</span><div class="pagination"><button class="icon-button" data-action="knowledge-prev" aria-label="Previous articles"${state.knowledgeOffset === 0 ? ' disabled' : ''}>${icon('left')}</button><button class="icon-button" data-action="knowledge-next" aria-label="Next articles"${state.knowledgeOffset + 50 >= Number(knowledge.total || 0) ? ' disabled' : ''}>${icon('chevron')}</button></div></div></section></div>`;
   $('#knowledge-search-form').addEventListener('submit', event => { event.preventDefault(); state.knowledgeSearch = $('#knowledge-search').value.trim(); state.knowledgeOffset = 0; loadKnowledge(); });
   let timer;
   $('#knowledge-search').addEventListener('input', event => { state.knowledgeSearch = event.target.value; state.knowledgeOffset = 0; clearTimeout(timer); timer = setTimeout(loadKnowledge, 300); });
   if (wasSearching) { const input = $('#knowledge-search'); input.focus({ preventScroll: true }); if (typeof selection === 'number') input.setSelectionRange(selection, selection); }
 }
-async function openArticle(value) {
-  const id = Number(value);
-  if (!Number.isSafeInteger(id) || id < 1 || !mayLeaveArticle()) return;
+async function openArticle(value, { anchor = '' } = {}) {
+  const id = String(value || '');
+  if (!id || !mayLeaveArticle()) return;
   const generation = ++state.knowledgeGeneration;
-  state.articleEditing = false; state.articleDirty = false; state.article = null;
-  state.articleTarget = id; activateKnowledgeNavigation(); location.hash = `knowledge/article/${id}`;
+  state.articleEditing = false; state.articleDirty = false; state.article = null; state.asset = null;
+  state.articleTarget = id; activateView('knowledge'); location.hash = `knowledge/article/${encodeURIComponent(id)}${anchor ? `#${anchor}` : ''}`;
   document.title = 'Opening article · AssetDesk';
   $('#main-content').innerHTML = `<div class="knowledge-back-row"><button class="view-link" data-action="knowledge-back">${icon('left')}Back to knowledge base</button></div>${loadingPanel()}`;
   try {
-    const article = await api(`/api/desk/knowledge/articles/${id}`);
-    if (generation !== state.knowledgeGeneration || state.current !== 'knowledge') return;
+    const article = await api(`/api/desk/knowledge/articles/${encodeURIComponent(id)}`);
+    if (generation !== state.knowledgeGeneration || state.current !== 'knowledge' || state.articleTarget !== id) return;
     state.article = article; renderArticle();
-    $('#main-content').scrollIntoView({ block: 'start' });
+    if (!scrollArticleAnchor(id, articleLocation()?.anchor)) $('#main-content').scrollIntoView({ block: 'start' });
   } catch (error) {
     if (generation !== state.knowledgeGeneration || state.current !== 'knowledge' || !state.session) return;
-    $('#main-content').innerHTML = `<div class="knowledge-back-row"><button class="view-link" data-action="knowledge-back">${icon('left')}Back to knowledge base</button></div><div class="error-panel">${icon('alert')}<div><strong>We couldn’t open this article.</strong><p>${esc(error.message)}</p></div><button class="btn" data-article="${id}">Try again</button></div>`;
+    $('#main-content').innerHTML = `<div class="knowledge-back-row"><button class="view-link" data-action="knowledge-back">${icon('left')}Back to knowledge base</button></div><div class="error-panel">${icon('alert')}<div><strong>This article is unavailable.</strong><p>${esc(error.message)}</p></div><button class="btn" data-article="${esc(id)}">Try again</button></div>`;
   }
 }
 function renderArticle() {
   const article = state.article;
   if (!article) return;
-  document.title = `${article.name} · AssetDesk`; $('#breadcrumb-current').textContent = article.kind === 'asset' ? 'Asset record' : article.kind === 'ticket' ? 'Ticket documentation' : 'Knowledge base';
-  $('#main-content').innerHTML = `<div class="knowledge-back-row"><button class="view-link" data-action="knowledge-back">${icon('left')}Back to knowledge base</button><span class="role-badge">${article.kind === 'asset' ? 'Asset record' : article.kind === 'ticket' ? 'Ticket documentation' : 'Knowledge article'}</span></div><section class="panel article-reader" aria-label="Knowledge article"><header class="article-heading"><div><h1>${esc(article.name)}</h1><p>Updated ${esc(shortDate(article.updated_at))}</p></div>${article.canEdit ? `<button class="btn" data-action="edit-article">${icon('note')}Edit article</button>` : ''}</header><div class="article-body" id="knowledge-article-body"></div><footer class="article-footer">${icon('shield')}Available through your AssetDesk workspace${article.kind === 'ticket' ? ' · Manage this ticket’s workflow and notes in the ticket dashboard.' : ''}</footer></section>`;
-  // Only this authenticated API's sanitized HTML is permitted in the document body.
+  document.title = `${article.name} · AssetDesk`; $('#breadcrumb-current').textContent = 'Knowledge article';
+  $('#main-content').innerHTML = `<div class="knowledge-back-row"><button class="view-link" data-action="knowledge-back">${icon('left')}Back to knowledge base</button><span class="role-badge">${esc(article.category?.name || 'Knowledge article')}</span></div><section class="panel article-reader" aria-label="Knowledge article"><header class="article-heading"><div><h1>${esc(article.name)}</h1><p>Updated ${esc(shortDate(article.updated_at))}</p></div>${article.canEdit ? `<button class="btn" data-action="edit-article">${icon('note')}Edit article</button>` : ''}</header><div class="article-body" id="knowledge-article-body"></div><footer class="article-footer">${icon('shield')}Access follows this article’s category permissions.</footer></section>`;
   $('#knowledge-article-body').innerHTML = article.html || '<p>This article is empty.</p>';
+  const prefix = `#doc-${article.id}-`;
+  $('#knowledge-article-body').querySelectorAll('a[href]').forEach(link => {
+    const href = link.getAttribute('href');
+    if (href.startsWith(prefix)) link.setAttribute('href', `#knowledge/article/${article.id}#${href.slice(prefix.length)}`);
+  });
 }
 async function editArticle(article = null) {
   if (state.articleEditing && !mayLeaveArticle()) return;
   if (article && !article.canEdit) return;
-  activateKnowledgeNavigation();
-  if (!state.knowledge) {
-    $('#main-content').innerHTML = loadingPanel();
-    try { state.knowledge = await api('/api/desk/knowledge?limit=50&offset=0'); }
-    catch (error) { toast(error.message, true); if (article) renderArticle(); else loadKnowledge(); return; }
-  }
+  activateView('knowledge');
+  try { await fetchCategories(); } catch (error) { toast(error.message, true); return; }
+  const editable = state.categories.filter(canEditCategory);
+  if (!editable.length) { toast('You do not have permission to create articles in an accessible category.', true); return; }
   state.articleEditing = true; state.articleDirty = false; state.articleSaving = false;
-  state.articleDraft = article ? { ...article } : { id: null, name: '', html: '<p><br></p>', chapter_id: null, kind: 'knowledge' };
+  state.articleDraft = article ? { ...article } : { id: null, name: '', html: '<p><br></p>', category_id: editable.some(category => category.id === state.knowledgeCategory) ? state.knowledgeCategory : editable[0].id };
   renderArticleEditor();
 }
 function renderArticleEditor() {
   const draft = state.articleDraft;
   if (!draft) return;
   $('#breadcrumb-current').textContent = draft.id ? 'Edit article' : 'New article'; document.title = `${draft.id ? 'Edit' : 'New'} article · AssetDesk`;
-  $('#main-content').innerHTML = `<div class="knowledge-back-row"><button class="view-link" data-action="cancel-article">${icon('left')}Cancel editing</button><span class="small muted">${draft.kind === 'asset' ? 'Asset ownership and equipment details' : 'Help your team find a reliable answer'}</span></div><section class="panel article-editor-panel"><form id="article-editor-form"><header class="article-heading"><div><h1>${draft.id ? 'Edit article' : 'Create an article'}</h1><p>Write it once. Make the next support request easier.</p></div><div class="article-editor-actions"><button class="btn" type="button" data-action="cancel-article">Cancel editing</button><button class="btn primary" type="submit">Save article</button></div></header><div class="article-editor-fields"><div class="field"><label for="article-title">Article title</label><input class="input" id="article-title" name="name" required maxlength="255" placeholder="For example: Connect to the company VPN" value="${esc(draft.name)}"></div>${!draft.id ? `<div class="field"><label for="article-chapter">Article chapter</label><select id="article-chapter" name="chapter_id"><option value="">No chapter</option>${(state.knowledge?.chapters || []).map(chapter => `<option value="${Number(chapter.id)}"${Number(draft.chapter_id) === Number(chapter.id) ? ' selected' : ''}>${esc(chapter.name)}</option>`).join('')}</select></div>` : '<p class="small muted">This article stays in its current book and chapter.</p>'}</div><div class="article-editing-surface"><div class="editor-toolbar" role="toolbar" aria-label="Article formatting"><button class="btn" type="button" data-editor-command="bold" aria-label="Bold"><strong>B</strong></button><button class="btn" type="button" data-editor-command="italic" aria-label="Italic"><em>I</em></button><button class="btn" type="button" data-editor-command="formatBlock" data-editor-value="h2">Heading</button><button class="btn" type="button" data-editor-command="formatBlock" data-editor-value="p">Paragraph</button><button class="btn" type="button" data-editor-command="insertUnorderedList">Bulleted list</button><button class="btn" type="button" data-editor-command="insertOrderedList">Numbered list</button><button class="btn" type="button" data-editor-command="formatBlock" data-editor-value="pre">Code block</button><button class="btn" type="button" data-editor-link>Insert link</button></div><div class="editor-link-fields" id="editor-link-fields" hidden><label for="editor-link-url">Link URL</label><input class="input" id="editor-link-url" type="url" placeholder="https://example.com/guide"><button class="btn" type="button" id="editor-apply-link">Add link</button></div><label class="sr-only" for="article-body-editor">Article body</label><div class="article-rich-editor article-body" id="article-body-editor" role="textbox" aria-label="Article body" aria-multiline="true" contenteditable="true" spellcheck="true"></div><p class="editor-help">Paste inserts plain text. Use the formatting tools to add headings, lists, and links.</p></div><div class="article-editor-error field-error" role="alert"></div><footer class="article-save-footer"><span class="small muted" id="article-draft-state">Changes are saved when you select Save article.</span><button class="btn primary" type="submit">Save article</button></footer></form></section>`;
-  const form = $('#article-editor-form'), editor = $('#article-body-editor');
-  editor.innerHTML = draft.html || '<p><br></p>';
+  $('#main-content').innerHTML = `<div class="knowledge-back-row"><button class="view-link" data-action="cancel-article">${icon('left')}Cancel editing</button><span class="small muted">Write clearly. Keep access intentional.</span></div><section class="panel article-editor-panel"><form id="article-editor-form"><header class="article-heading"><div><h1>${draft.id ? 'Edit article' : 'Create an article'}</h1><p>Write it once. Make the next support request easier.</p></div><div class="article-editor-actions"><button class="btn" type="button" data-action="cancel-article">Cancel editing</button><button class="btn primary" type="submit">Save article</button></div></header><div class="article-editor-fields"><div class="field"><label for="article-title">Article title</label><input class="input" id="article-title" name="name" required maxlength="255" placeholder="For example: Connect to the company VPN" value="${esc(draft.name)}"></div><div class="field"><label for="article-category">Article category</label><select id="article-category" name="category_id" required>${categoryOptions(draft.category_id, { editable: true })}</select><small>Readers and editors are controlled by the selected category.</small></div></div><div class="article-editing-surface"><div class="editor-toolbar" role="toolbar" aria-label="Article formatting"><button class="btn" type="button" data-editor-command="bold" aria-label="Bold"><strong>B</strong></button><button class="btn" type="button" data-editor-command="italic" aria-label="Italic"><em>I</em></button><button class="btn" type="button" data-editor-command="formatBlock" data-editor-value="h2">Heading</button><button class="btn" type="button" data-editor-command="formatBlock" data-editor-value="p">Paragraph</button><button class="btn" type="button" data-editor-command="insertUnorderedList">Bulleted list</button><button class="btn" type="button" data-editor-command="insertOrderedList">Numbered list</button><button class="btn" type="button" data-editor-command="formatBlock" data-editor-value="pre">Code block</button><button class="btn" type="button" data-editor-link>Insert link</button></div><div class="editor-link-fields" id="editor-link-fields" hidden><label for="editor-link-url">Link URL</label><input class="input" id="editor-link-url" type="text" placeholder="https://example.com/guide or #knowledge/article/…"><button class="btn" type="button" id="editor-apply-link">Add link</button></div><label class="sr-only" for="article-body-editor">Article body</label><div class="article-rich-editor article-body" id="article-body-editor" role="textbox" aria-label="Article body" aria-multiline="true" contenteditable="true" spellcheck="true"></div><p class="editor-help">Paste inserts plain text. Use the formatting tools to add headings, lists, and links.</p></div><div class="article-editor-error field-error" role="alert"></div><footer class="article-save-footer"><span class="small muted" id="article-draft-state">Changes are saved when you select Save article.</span><button class="btn primary" type="submit">Save article</button></footer></form></section>`;
+  const form = $('#article-editor-form'), editor = $('#article-body-editor'); editor.innerHTML = draft.html || '<p><br></p>';
   let selection = null;
   const rememberSelection = () => { const selected = window.getSelection(); if (selected.rangeCount && editor.contains(selected.anchorNode)) selection = selected.getRangeAt(0).cloneRange(); };
   const restoreSelection = () => { editor.focus(); if (selection) { const selected = window.getSelection(); selected.removeAllRanges(); selected.addRange(selection); } };
   const dirty = () => { state.articleDirty = true; $('#article-draft-state').textContent = 'Unsaved changes'; };
-  editor.addEventListener('mouseup', rememberSelection); editor.addEventListener('keyup', rememberSelection);
-  editor.addEventListener('input', () => { rememberSelection(); dirty(); });
-  $('#article-title').addEventListener('input', dirty); $('#article-chapter')?.addEventListener('change', dirty);
+  editor.addEventListener('mouseup', rememberSelection); editor.addEventListener('keyup', rememberSelection); editor.addEventListener('input', () => { rememberSelection(); dirty(); });
+  $('#article-title').addEventListener('input', dirty); $('#article-category').addEventListener('change', dirty);
   editor.addEventListener('paste', event => { event.preventDefault(); document.execCommand('insertText', false, event.clipboardData?.getData('text/plain') || ''); dirty(); });
   editor.addEventListener('drop', event => event.preventDefault());
   $('.editor-toolbar').addEventListener('mousedown', event => { if (event.target.closest('button')) event.preventDefault(); });
@@ -585,49 +610,104 @@ function renderArticleEditor() {
   });
   $('#editor-apply-link').addEventListener('click', () => {
     const value = $('#editor-link-url').value.trim();
-    let url; try { url = new URL(value); } catch { toast('Enter a complete HTTP or HTTPS link.', true); return; }
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) { toast('Enter a safe HTTP or HTTPS link.', true); return; }
-    restoreSelection(); document.execCommand('createLink', false, url.href); rememberSelection(); dirty(); $('#editor-link-fields').hidden = true;
+    let href;
+    if (/^#(?:knowledge\/article\/[A-Za-z0-9_-]+(?:#[A-Za-z][A-Za-z0-9_-]{0,199})?|(?:assets|tickets)\/[A-Za-z0-9._-]+)$/.test(value)) href = value;
+    else { let url; try { url = new URL(value); } catch { toast('Enter a complete web link or an AssetDesk article, asset, or ticket link.', true); return; } if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) { toast('Enter a safe HTTP or HTTPS link.', true); return; } href = url.href; }
+    restoreSelection(); document.execCommand('createLink', false, href); rememberSelection(); dirty(); $('#editor-link-fields').hidden = true;
   });
   form.addEventListener('submit', async event => {
-    event.preventDefault();
-    if (state.articleSaving) return;
+    event.preventDefault(); if (state.articleSaving) return;
     const name = $('#article-title').value.trim(), html = editor.innerHTML;
     if (!name || !editor.textContent.trim()) { $('.article-editor-error').textContent = 'Add a title and some article content.'; return; }
-    const payload = { name, html };
-    if (draft.id) { payload.updated_at = draft.updated_at; if (draft.revision) payload.revision = draft.revision; }
-    else { const chapter = $('#article-chapter')?.value; if (chapter) payload.chapter_id = Number(chapter); }
-    state.articleSaving = true; editor.contentEditable = 'false';
-    form.querySelectorAll('button,input,select').forEach(control => { control.disabled = true; });
-    $('.article-editor-error').textContent = '';
-    try {
-      const saved = await api(`/api/desk/knowledge/articles${draft.id ? `/${draft.id}` : ''}`, { method: draft.id ? 'PATCH' : 'POST', body: payload });
-      state.articleSaving = false; state.articleDirty = false; state.articleEditing = false; state.article = saved; state.articleDraft = null;
-      location.hash = `knowledge/article/${saved.id}`; renderArticle(); toast(draft.id ? 'Article updated.' : 'Article created.');
-    } catch (error) {
-      state.articleSaving = false; editor.contentEditable = 'true'; form.querySelectorAll('button,input,select').forEach(control => { control.disabled = false; });
-      $('.article-editor-error').textContent = error.status === 409 ? 'This article was changed by another teammate. Your draft is kept here. Copy your changes before reopening the latest article.' : error.message;
-    }
+    const payload = { name, html, category_id: $('#article-category').value }; if (draft.id) payload.version = draft.version;
+    state.articleSaving = true; editor.contentEditable = 'false'; form.querySelectorAll('button,input,select').forEach(control => { control.disabled = true; }); $('.article-editor-error').textContent = '';
+    try { const saved = await api(`/api/desk/knowledge/articles${draft.id ? `/${encodeURIComponent(draft.id)}` : ''}`, { method: draft.id ? 'PATCH' : 'POST', body: payload }); state.articleSaving = false; state.articleDirty = false; state.articleEditing = false; state.article = saved.article || saved; state.articleDraft = null; location.hash = `knowledge/article/${state.article.id}`; renderArticle(); toast(draft.id ? 'Article updated.' : 'Article created.'); }
+    catch (error) { state.articleSaving = false; editor.contentEditable = 'true'; form.querySelectorAll('button,input,select').forEach(control => { control.disabled = false; }); $('.article-editor-error').textContent = error.status === 409 ? 'This article changed. Your draft is kept here. Copy your changes before reopening the latest version.' : error.message; }
   });
 }
-function cancelArticleEditing() {
-  if (!mayLeaveArticle()) return;
-  const previous = state.article;
-  state.articleEditing = false; state.articleDirty = false; state.articleDraft = null;
-  if (previous) renderArticle(); else navigate('knowledge');
-}
-function openChapterForm() {
+function cancelArticleEditing() { if (!mayLeaveArticle()) return; const previous = state.article; state.articleEditing = false; state.articleDirty = false; state.articleDraft = null; if (previous) renderArticle(); else navigate('knowledge'); }
+async function openCategoryManager(editId = null) {
   if (state.session.user.role !== 'admin') return;
-  showModal(`<form id="chapter-form"><header class="modal-header"><div><h2>Create a chapter</h2><p>Group related guides so your team can find them quickly.</p></div><button class="icon-button" type="button" data-action="close-modal" aria-label="Close chapter form">${icon('close')}</button></header><div class="modal-body modal-form"><div class="field"><label for="chapter-name">Chapter name</label><input class="input" id="chapter-name" name="name" required maxlength="255" placeholder="For example: Accounts and access"></div><div class="field"><label for="chapter-description">Description (optional)</label><textarea id="chapter-description" name="description" maxlength="2000"></textarea></div><div class="field-error" role="alert"></div></div><footer class="modal-footer"><button class="btn" type="button" data-action="close-modal">Cancel</button><button class="btn primary" type="submit">Create chapter</button></footer></form>`);
-  $('#chapter-form').addEventListener('submit', async event => {
-    event.preventDefault(); const form = event.currentTarget, button = $('button[type=submit]', form); button.disabled = true;
-    try { await api('/api/desk/knowledge/chapters', { method: 'POST', body: Object.fromEntries(new FormData(form)) }); modal.close(); state.article = null; await loadKnowledge(); toast('Chapter created.'); }
-    catch (error) { if (form.isConnected) { $('.field-error', form).textContent = error.message; button.disabled = false; } else toast(error.message, true); }
-  });
+  try { const [categories, users] = await Promise.all([fetchCategories(), api('/api/desk/technicians')]); state.technicians = users.technicians || []; const editing = editId && editId !== 'new' ? categories.find(category => category.id === editId) : null; renderCategoryManager(categories, editing, editId === 'new'); }
+  catch (error) { toast(error.message, true); }
 }
-
+function renderCategoryManager(categories, editing = null, creating = false) {
+  const people = state.technicians.filter(person => person.active || editing?.reader_ids?.includes(person.id) || editing?.editor_ids?.includes(person.id));
+  showModal(`<header class="modal-header"><div><h2>Knowledge categories & permissions</h2><p>Choose who can find, read, and edit information in each category.</p></div><button class="icon-button" type="button" data-action="close-modal" aria-label="Close category permissions">${icon('close')}</button></header><div class="modal-body">${!creating && !editing ? `<div class="category-manager-list">${categories.map(category => `<article class="category-manager-row"><span class="category-manager-icon">${icon(category.kind === 'assets' ? 'laptop' : 'book')}</span><div><strong>${esc(category.name)}</strong><p>${category.visibility === 'restricted' ? 'Restricted to selected people' : 'All staff can view'} · ${category.kind === 'assets' ? 'Assets area' : 'Knowledge'}</p></div><button class="btn" data-edit-category="${esc(category.id)}" aria-label="Edit category ${esc(category.name)}">Edit</button></article>`).join('')}</div><button class="btn primary" data-action="new-category">${icon('plus')}New category</button>` : `<form id="category-form" class="modal-form"><h3>${editing ? 'Edit category' : 'Create a category'}</h3><div class="field"><label for="category-name">Category name</label><input class="input" id="category-name" name="name" required maxlength="100" value="${esc(editing?.name)}"></div><div class="field"><label for="category-description">Description</label><textarea id="category-description" name="description" maxlength="2000">${esc(editing?.description)}</textarea></div><div class="field-grid"><div class="field"><label for="category-kind">Category type</label><select id="category-kind" name="kind"${editing ? ' disabled' : ''}><option value="knowledge"${editing?.kind !== 'assets' ? ' selected' : ''}>Knowledge</option><option value="assets"${editing?.kind === 'assets' ? ' selected' : ''}>Assets area</option></select></div><div class="field"><label for="category-visibility">Visibility</label><select id="category-visibility" name="visibility"><option value="all"${editing?.visibility !== 'restricted' ? ' selected' : ''}>All staff</option><option value="restricted"${editing?.visibility === 'restricted' ? ' selected' : ''}>Restricted</option></select></div></div><label class="check-row" for="category-staff-edit"><input id="category-staff-edit" type="checkbox"${editing?.allow_staff_edit !== false ? ' checked' : ''}><span>Allow all staff to edit<small>Applies while visibility is All staff. Selected editors can edit restricted categories.</small></span></label><section class="category-access-list" aria-label="Category access"><div class="category-access-heading"><strong>People with access</strong><span>View</span><span>Edit</span></div>${people.map(person => `<div class="category-access-row"><div class="person">${avatar(person.name)}<span><strong>${esc(person.name)}</strong><small>${esc(person.email)}${person.role === 'admin' ? ' · Administrator' : ''}</small></span></div><input type="checkbox" name="readers" value="${esc(person.id)}" aria-label="Can view ${esc(person.name)}"${editing?.reader_ids?.includes(person.id) || editing?.editor_ids?.includes(person.id) || person.role === 'admin' ? ' checked' : ''}${person.role === 'admin' ? ' disabled' : ''}><input type="checkbox" name="editors" value="${esc(person.id)}" aria-label="Can edit ${esc(person.name)}"${editing?.editor_ids?.includes(person.id) || person.role === 'admin' ? ' checked' : ''}${person.role === 'admin' ? ' disabled' : ''}></div>`).join('')}</section><p class="permission-explainer">${icon('shield')}Administrators always have access. Editors can also view the category. Permissions apply to articles, asset records, search results, and images inside it.</p><div class="field-error" role="alert"></div><div class="modal-form-actions"><button class="btn" type="button" data-action="manage-categories">Back to categories</button><button class="btn primary" type="submit">${editing ? 'Save category' : 'Create category'}</button></div></form>`}</div>`);
+  $('#category-form')?.addEventListener('submit', async event => {
+    event.preventDefault(); const form = event.currentTarget; const values = new FormData(form); const editors = values.getAll('editors'), readers = [...new Set([...values.getAll('readers'), ...editors])];
+    const body = { name: values.get('name').trim(), description: values.get('description').trim(), visibility: values.get('visibility'), reader_ids: readers, editor_ids: editors, allow_staff_edit: $('#category-staff-edit').checked };
+    if (editing) body.version = editing.version; else body.kind = values.get('kind');
+    const button = $('button[type=submit]', form); button.disabled = true;
+    try { await api(`/api/desk/knowledge/categories${editing ? `/${encodeURIComponent(editing.id)}` : ''}`, { method: editing ? 'PATCH' : 'POST', body }); toast(editing ? 'Category permissions saved.' : 'Category created.'); await fetchCategories(); state.knowledge = null; if (state.current === 'knowledge' && !state.articleEditing && !state.article) await loadKnowledge(); await openCategoryManager(); }
+    catch (error) { $('.field-error', form).textContent = error.message; button.disabled = false; }
+  });
+  modal.querySelectorAll('input[name=editors]').forEach(checkbox => checkbox.addEventListener('change', () => { if (checkbox.checked) { const viewer = [...modal.querySelectorAll('input[name=readers]')].find(input => input.value === checkbox.value); if (viewer) viewer.checked = true; } }));
+}
+function renderAssetCards(assets, { compact = false } = {}) {
+  if (!assets.length) return emptyState('No asset records yet.', 'Add people, PCs, hardware, or other equipment. Ticket references will link to their records automatically.', { symbol: 'laptop' });
+  return `<div class="asset-grid${compact ? ' compact-assets' : ''}">${assets.map(asset => `<article class="asset-card"><div class="asset-card-top"><span class="asset-device">${icon(asset.type === 'personnel' ? 'user' : 'laptop')}</span><span class="role-badge">${esc(assetTypeLabels[asset.type] || 'Asset')}</span></div><button class="native-asset-title" data-asset="${esc(asset.id || asset.ref)}">${esc(asset.name || asset.ref)}</button><div class="asset-ref mono">${esc(asset.ref)}</div><p>${esc(asset.type === 'personnel' ? [asset.email, asset.department].filter(Boolean).join(' · ') || 'Personnel record' : [asset.manufacturer, asset.model, asset.location].filter(Boolean).join(' · ') || 'Equipment record')}</p><div class="asset-card-foot"><span>${Number(asset.ticket_count || 0)} linked ticket${Number(asset.ticket_count || 0) === 1 ? '' : 's'}</span><button class="view-link" data-asset="${esc(asset.id || asset.ref)}">Open record ${icon('chevron')}</button></div></article>`).join('')}</div>`;
+}
+async function loadAssets() {
+  if (!state.session || state.current !== 'assets' || state.asset) return;
+  const generation = ++state.assetGeneration;
+  $('#breadcrumb-current').textContent = 'Assets'; document.title = 'Assets · AssetDesk';
+  const params = new URLSearchParams({ limit: '30', offset: String(state.assetOffset) });
+  if (state.assetSearch) params.set('search', state.assetSearch);
+  if (state.assetType) params.set('type', state.assetType);
+  if (state.assetCategory) params.set('category_id', state.assetCategory);
+  try { const [records, categories] = await Promise.all([api(`/api/desk/assets?${params}`), fetchCategories()]); if (generation !== state.assetGeneration || state.current !== 'assets' || state.asset) return; state.assets = records.assets || []; state.assetTotal = Number(records.total || 0); state.categories = categories; renderAssetInventory(); }
+  catch (error) { $('#main-content').innerHTML = `<div class="error-panel">${icon('alert')}<div><strong>Assets could not be loaded.</strong><p>${esc(error.message)}</p></div><button class="btn" data-action="refresh">Try again</button></div>`; }
+}
+function renderAssetInventory() {
+  $('#breadcrumb-current').textContent = 'Assets'; document.title = 'Assets · AssetDesk';
+  const selected = state.categories.find(category => category.id === state.assetCategory);
+  $('#main-content').innerHTML = `<div class="page-heading"><div><div class="eyebrow">Your people & equipment</div><h1>Assets</h1><p>People, PCs, hardware, and the support history that connects them.</p></div><div class="heading-actions">${state.categories.some(category => category.kind === 'assets' && canEditCategory(category)) ? `<button class="btn primary" data-action="new-asset">${icon('plus')}New asset</button>` : ''}</div></div><section class="panel native-asset-toolbar" aria-label="Asset filters"><form id="asset-search-form" class="native-asset-search" role="search"><label class="sr-only" for="asset-search">Search assets</label>${icon('search')}<input class="input" id="asset-search" type="search" placeholder="Search names, asset IDs, people…" value="${esc(state.assetSearch)}"><button class="btn" type="submit">Search</button></form><div class="field"><label for="asset-type-filter">Asset type</label><select id="asset-type-filter"><option value="">All types</option>${options(assetTypeLabels, state.assetType)}</select></div><div class="field"><label for="asset-category-filter">Knowledge category</label><select id="asset-category-filter"><option value="">All accessible categories</option>${categoryOptions(state.assetCategory, { assetOnly: true })}</select></div></section><div class="inventory-summary"><span>${state.assetTotal} accessible asset${state.assetTotal === 1 ? '' : 's'}</span>${categoryBadge(selected)}</div>${renderAssetCards(state.assets)}<div class="native-asset-pagination"><span>${state.assetTotal ? `${state.assetOffset + 1}–${Math.min(state.assetOffset + state.assets.length, state.assetTotal)} of ${state.assetTotal}` : 'No assets to show'}</span><div class="pagination"><button class="icon-button" data-action="asset-prev" aria-label="Previous assets"${state.assetOffset <= 0 ? ' disabled' : ''}>${icon('left')}</button><button class="icon-button" data-action="asset-next" aria-label="Next assets"${state.assetOffset + 30 >= state.assetTotal ? ' disabled' : ''}>${icon('chevron')}</button></div></div>`;
+  $('#asset-search-form').addEventListener('submit', event => { event.preventDefault(); state.assetSearch = $('#asset-search').value.trim(); state.assetOffset = 0; loadAssets(); });
+  $('#asset-type-filter').addEventListener('change', event => { state.assetType = event.target.value; state.assetOffset = 0; loadAssets(); });
+  $('#asset-category-filter').addEventListener('change', event => { state.assetCategory = event.target.value; state.assetOffset = 0; loadAssets(); });
+}
+async function openAsset(value, { quiet = false } = {}) {
+  const id = String(value || ''); if (!id || !mayLeaveArticle()) return;
+  const generation = ++state.assetGeneration; state.assetTarget = id; state.article = null; state.articleEditing = false;
+  activateView('assets'); location.hash = `assets/${encodeURIComponent(id)}`;
+  if (!quiet) $('#main-content').innerHTML = loadingPanel();
+  try { const data = await api(`/api/desk/assets/${encodeURIComponent(id)}`); if (generation !== state.assetGeneration || state.current !== 'assets' || state.assetTarget !== id) return; state.asset = data.asset || data; renderAssetDetail(); }
+  catch (error) { if (generation !== state.assetGeneration || state.current !== 'assets') return; $('#main-content').innerHTML = `<div class="knowledge-back-row"><button class="view-link" data-action="assets-back">${icon('left')}Back to assets</button></div><div class="error-panel">${icon('alert')}<div><strong>This asset is unavailable.</strong><p>${esc(error.message)}</p></div></div>`; }
+}
+function renderAssetDetail() {
+  const asset = state.asset;
+  if (!asset) return;
+  $('#breadcrumb-current').textContent = 'Asset record'; document.title = `${asset.name || asset.ref} · AssetDesk`;
+  const tickets = asset.tickets || asset.linked_tickets || [];
+  const values = [['Asset ID', asset.ref], ['Type', assetTypeLabels[asset.type] || asset.type], ['Lifecycle status', assetStatusLabels[asset.status] || asset.status], ['Owner / personnel', asset.owner_restricted ? 'Restricted personnel record' : asset.owner?.name || asset.owner_name], ['Email', asset.email], ['Department', asset.department], ['Location', asset.location], ['Serial number', asset.serial_number], ['Manufacturer', asset.manufacturer], ['Model', asset.model]];
+  $('#main-content').innerHTML = `<div class="knowledge-back-row"><button class="view-link" data-action="assets-back">${icon('left')}Back to assets</button><span class="role-badge">${esc(assetTypeLabels[asset.type] || 'Asset record')}</span></div><section class="panel native-asset-detail"><header class="article-heading"><div><div class="eyebrow">${esc(asset.ref)}</div><h1>${esc(asset.name || asset.ref)}</h1><p>${esc(asset.category?.name || 'Assets')} · Updated ${esc(shortDate(asset.updated_at))}</p></div>${asset.canEdit ? `<button class="btn" data-action="edit-asset">${icon('note')}Edit asset</button>` : ''}</header><div class="native-asset-detail-body"><section><h2>Record details</h2><dl class="asset-record-fields">${values.filter(([, value]) => value).map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>${asset.description ? `<h2>Notes</h2><div class="ticket-description">${esc(asset.description)}</div>` : ''}</section><section class="asset-linked-tickets" aria-label="Linked tickets"><div class="panel-header"><div><h2 class="panel-title">Linked tickets<span class="count-badge">${tickets.length}</span></h2><p class="panel-subtitle">Every request involving this asset, in one place.</p></div></div>${tickets.length ? tickets.map(ticket => `<button class="asset-ticket-row" data-ticket="${esc(ticket.key)}"><span><strong>${esc(ticket.subject)}</strong><small class="mono">${esc(ticket.key)} · ${esc(shortDate(ticket.created_at))}</small></span>${pill(ticket.status)}</button>`).join('') : '<p class="empty-small">Tickets that mention or link this asset will appear here automatically.</p>'}</section></div></section>`;
+}
+async function openAssetForm(asset = null, preferredCategory = '') {
+  try {
+    const [categories, people] = await Promise.all([fetchCategories(), api('/api/desk/assets?type=personnel&limit=100')]);
+    const editable = categories.filter(category => category.kind === 'assets' && canEditCategory(category));
+    if (!editable.length) { toast('You do not have permission to create or edit assets in an accessible asset category.', true); return; }
+    const defaultCategory = editable.some(category => category.id === preferredCategory) ? preferredCategory : editable[0].id;
+    const record = asset || { ref: '', name: '', type: 'hardware', category_id: defaultCategory, status: 'active' };
+    const personOptions = (people.assets || []).filter(person => person.id !== record.id);
+    showModal(`<form id="asset-form"><header class="modal-header"><div><h2>${asset ? 'Edit asset' : 'Create an asset'}</h2><p>${asset ? 'Keep ownership and equipment details current.' : 'Add a person, PC, or piece of equipment to your workspace.'}</p></div><button class="icon-button" type="button" data-action="close-modal" aria-label="Close asset form">${icon('close')}</button></header><div class="modal-body modal-form"><div class="field-grid"><div class="field"><label for="asset-ref">Asset ID</label><input class="input" name="ref" id="asset-ref" required maxlength="64" value="${esc(record.ref)}" placeholder="PC-1042 or PERSON-001"></div><div class="field"><label for="asset-name">Asset name</label><input class="input" name="name" id="asset-name" required maxlength="200" value="${esc(record.name)}" placeholder="A clear, recognizable name"></div><div class="field"><label for="asset-type">Asset type</label><select name="type" id="asset-type">${options(assetTypeLabels, record.type)}</select></div><div class="field"><label for="asset-category">Knowledge category</label><select name="category_id" id="asset-category" required>${categoryOptions(record.category_id, { editable: true, assetOnly: true })}</select></div><div class="field" id="asset-owner-field"><label for="asset-owner">Owner / personnel</label><select name="owner_id" id="asset-owner">${record.owner_restricted ? '<option value="__restricted__" selected>Restricted owner (unchanged)</option>' : ''}<option value="">No personnel record selected</option>${personOptions.map(person => `<option value="${esc(person.id)}"${person.id === record.owner_id ? ' selected' : ''}>${esc(person.name || person.ref)} · ${esc(person.ref)}</option>`).join('')}</select></div><div class="field"><label for="asset-owner-name">Owner name</label><input class="input" name="owner_name" id="asset-owner-name" maxlength="200" value="${esc(record.owner_name)}" placeholder="Optional owner or custodian"></div><div class="field"><label for="asset-email">Email</label><input class="input" name="email" id="asset-email" type="email" maxlength="254" value="${esc(record.email)}"></div><div class="field"><label for="asset-department">Department</label><input class="input" name="department" id="asset-department" maxlength="200" value="${esc(record.department)}"></div><div class="field"><label for="asset-location">Location</label><input class="input" name="location" id="asset-location" maxlength="200" value="${esc(record.location)}"></div><div class="field"><label for="asset-status">Lifecycle status</label><select name="status" id="asset-status">${options(assetStatusLabels, record.status)}</select></div></div><section id="asset-hardware-fields"><h3 class="drawer-section-label">Equipment details</h3><div class="field-grid"><div class="field"><label for="asset-serial">Serial number</label><input class="input" name="serial_number" id="asset-serial" maxlength="200" value="${esc(record.serial_number)}"></div><div class="field"><label for="asset-manufacturer">Manufacturer</label><input class="input" name="manufacturer" id="asset-manufacturer" maxlength="200" value="${esc(record.manufacturer)}"></div><div class="field span-2"><label for="asset-model">Model</label><input class="input" name="model" id="asset-model" maxlength="200" value="${esc(record.model)}"></div></div></section><div class="field"><label for="asset-description">Notes</label><textarea name="description" id="asset-description" maxlength="20000" rows="4">${esc(record.description)}</textarea></div><div class="field-error" role="alert"></div></div><footer class="modal-footer"><button class="btn" type="button" data-action="close-modal">Cancel</button><button class="btn primary" type="submit">${asset ? 'Save asset' : 'Create asset'}</button></footer></form>`);
+    const syncType = () => { const personnel = $('#asset-type').value === 'personnel'; $('#asset-owner-field').hidden = personnel; $('#asset-hardware-fields').hidden = personnel; };
+    $('#asset-type').addEventListener('change', syncType); syncType();
+    $('#asset-form').addEventListener('submit', async event => {
+      event.preventDefault(); const form = event.currentTarget; const body = Object.fromEntries(new FormData(form)); body.ref = body.ref.trim(); body.name = body.name.trim(); if (body.owner_id === '__restricted__') { delete body.owner_id; if (!body.owner_name) delete body.owner_name; } else body.owner_id = body.type === 'personnel' ? null : body.owner_id || null; if (asset) body.version = asset.version;
+      const button = $('button[type=submit]', form); button.disabled = true;
+      try { const saved = await api(`/api/desk/assets${asset ? `/${encodeURIComponent(asset.id)}` : ''}`, { method: asset ? 'PATCH' : 'POST', body }); modal.close(); toast(asset ? 'Asset updated.' : 'Asset created.'); await openAsset((saved.asset || saved).id); }
+      catch (error) { if (form.isConnected) { $('.field-error', form).textContent = error.message; button.disabled = false; } else toast(error.message, true); }
+    });
+  } catch (error) { toast(error.message, true); }
+}
+function renderActions() {
+  $('#breadcrumb-current').textContent = 'Actions'; document.title = 'Actions · AssetDesk';
+  $('#main-content').innerHTML = `<div class="page-heading"><div><div class="eyebrow">Automation workspace</div><h1>Actions</h1><p>A dedicated home for the repeatable work behind great support.</p></div><span class="planned-badge">Planned</span></div><section class="panel actions-landing"><span class="actions-symbol">${icon('spark')}</span><div class="eyebrow">Coming in a future update</div><h2>Turn repeatable work into reliable actions.</h2><p>This area will hold automations your team needs to run, track, and complete. For now, it is a placeholder; no automations are configured or executed here.</p><div class="actions-examples"><article>${icon('users')}<strong>Employee onboarding</strong><span>Coordinate the steps for a new starter.</span></article><article>${icon('laptop')}<strong>Equipment preparation</strong><span>Keep repeatable setup work organized.</span></article><article>${icon('check')}<strong>Routine maintenance</strong><span>Bring recurring checks into one place.</span></article></div><button class="btn" data-nav="tickets">${icon('ticket')}Back to tickets</button></section>`;
+}
 document.addEventListener('click', event => {
-  const chapter = event.target.closest('[data-knowledge-chapter]');
-  if (chapter) { state.knowledgeChapter = chapter.dataset.knowledgeChapter; state.knowledgeOffset = 0; loadKnowledge(); }
+  const category = event.target.closest('[data-knowledge-category]');
+  if (category) { state.knowledgeCategory = category.dataset.knowledgeCategory; state.knowledgeOffset = 0; state.article = null; loadKnowledge(); }
 });
 window.addEventListener('beforeunload', event => { if (state.articleEditing && state.articleDirty) { event.preventDefault(); event.returnValue = ''; } });

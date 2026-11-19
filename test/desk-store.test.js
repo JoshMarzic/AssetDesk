@@ -29,7 +29,7 @@ test('migration preserves existing ticket/queue data and initializes legacy emai
   assert.equal(ticket.description, message.text);
   assert.equal(ticket.requester_name, 'Taylor Example');
   assert.equal(ticket.status, 'open');
-  assert.equal(ticket.page_id, 10);
+  assert.equal(store.ticket(ticket.key).page_id, 10);
   assert.equal(ticket.events.filter(e => e.type === 'created').length, 1);
   const next = new DeskStore(store).getTicket('HD-TEST1');
   assert.equal(next.events.length, ticket.events.length);
@@ -157,49 +157,6 @@ test('email capture is idempotent, honors initial triage, and only requester rep
   assert.ok(ticket.events.some(e => /Reopened/.test(e.body)));
 });
 
-test('asset links are reusable and list filters and dashboard totals reflect stored work', async t => {
-  const { desk, store } = fixture(t);
-  createTicket(store, 'HD-FIRST'); createTicket(store, 'HD-SECOND');
-  const tech = await desk.createTechnician(person);
-  let ticket = desk.getTicket('HD-FIRST');
-  ticket = desk.updateTicket(ticket.key, { assignee_id: tech.id, priority: 'high' }, { version: ticket.version });
-  desk.addAssets(ticket.key, [{ ref: 'LAPTOP-42', id: 3, url: 'https://wiki.example/link/3' }]);
-  desk.addAssets('HD-SECOND', [{ ref: 'LAPTOP-42', id: 3, url: 'https://wiki.example/link/3' }]);
-  assert.equal(desk.listAssets().length, 1);
-  assert.equal(desk.listAssets()[0].ticket_count, 2);
-  store.db.prepare('UPDATE tickets SET response_due_at=? WHERE key=?').run('2020-01-01T00:00:00.000Z', ticket.key);
-  assert.equal(desk.listTickets({ view: 'overdue' }).total, 1);
-  assert.equal(desk.listTickets({ view: 'unassigned' }).total, 1);
-  assert.equal(desk.listTickets({ assignee: tech.id, priority: 'high' }).total, 1);
-  assert.equal(desk.listTickets({ search: 'FIRST' }).total, 1);
-  assert.equal(desk.listTickets({ search: '%' }).total, 0);
-  assert.equal(desk.getTicket(ticket.key).is_overdue, true);
-  const dashboard = desk.dashboard();
-  assert.equal(dashboard.stats.open, 2);
-  assert.equal(dashboard.stats.unassigned, 1);
-  assert.equal(dashboard.stats.overdue, 1);
-  assert.equal(dashboard.workload[0].active_tickets, 1);
-  assert.equal(dashboard.workload[0].overdue_tickets, 1);
-  assert.ok(dashboard.activity.some(e => e.ticket_key === ticket.key));
-});
-
-test('metadata synchronization retains newer versions and retries safely after remote failure', t => {
-  const { desk, store } = fixture(t);
-  createTicket(store);
-  let ticket = desk.captureEmail('HD-TEST1', message, { receiptId: 'initial' });
-  const oldVersion = ticket.version;
-  assert.equal(desk.pendingSync().length, 1);
-  ticket = desk.updateTicket(ticket.key, { priority: 'urgent' }, { version: ticket.version });
-  assert.equal(desk.markSynced(ticket.key, oldVersion), false);
-  desk.failSync(ticket.key, new Error('private upstream response'));
-  assert.equal(desk.pendingSync().length, 0);
-  assert.ok(!desk.getTicket(ticket.key).sync.error.includes('private'));
-  const pending = desk.pendingSync(Date.now() + 10000);
-  assert.equal(pending[0].priority, 'urgent');
-  assert.equal(desk.markSynced(ticket.key, ticket.version), true);
-  assert.equal(desk.getTicket(ticket.key).sync.pending, false);
-});
-
 test('workflow data and active sessions survive reopening the persistent database', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'assetdesk-desk-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -215,21 +172,8 @@ test('workflow data and active sessions survive reopening the persistent databas
   assert.equal(desk.getTicket(ticket.key).assignee.id, user.id);
   assert.equal(desk.getTicket(ticket.key).status, 'in_progress');
   assert.equal(desk.session(session.token).user.id, user.id);
-  assert.equal(desk.pendingSync().length, 1);
+  assert.ok(desk.getTicket(ticket.key).events.some(event => event.type === 'assignment'));
   store.close();
-});
-
-test('legacy asset recovery queues existing references, backs off, and clears only recovered links', t => {
-  const { desk, store } = fixture(t);
-  createTicket(store);
-  desk.captureEmail('HD-TEST1', { ...message, assetRefs: ['LAPTOP-42', 'PC-18'] }, { receiptId: 'legacy-assets' });
-  assert.equal(desk.pendingAssetRecovery().length, 2);
-  desk.deferAssetRecovery('HD-TEST1', 'PC-18');
-  assert.deepEqual(desk.pendingAssetRecovery().map(a => a.ref), ['LAPTOP-42']);
-  desk.addAssets('HD-TEST1', [{ ref: 'LAPTOP-42', id: 3, url: 'https://wiki.example/link/3' }]);
-  assert.equal(desk.pendingAssetRecovery().length, 0);
-  assert.deepEqual(desk.pendingAssetRecovery(Date.now() + 300001).map(a => a.ref), ['PC-18']);
-  assert.equal(desk.getTicket('HD-TEST1').assets[0].ref, 'LAPTOP-42');
 });
 
 test('saved responses seed once, preserve placeholder text, validate edits, and support archiving', t => {
@@ -252,68 +196,6 @@ test('saved responses seed once, preserve placeholder text, validate edits, and 
   assert.throws(() => desk.createResponse({ title: 'Valid', body: 'x'.repeat(10001) }), /10000 characters/);
   assert.throws(() => desk.updateResponse(response.id, { active: 'false' }), /true or false/);
   assert.throws(() => desk.updateResponse('missing', { active: false }), e => e.statusCode === 404);
-});
-
-test('related tickets derive from the requester or shared asset without returning unrelated tickets or self', t => {
-  const { desk, store } = fixture(t);
-  for (const key of ['HD-BASE', 'HD-SAME-REQUESTER', 'HD-SHARED-ASSET', 'HD-UNRELATED']) createTicket(store, key);
-  store.db.prepare('UPDATE tickets SET requester=? WHERE key=?').run('other@example.com', 'HD-SHARED-ASSET');
-  store.db.prepare('UPDATE tickets SET requester=? WHERE key=?').run('unrelated@example.com', 'HD-UNRELATED');
-  const asset = { ref: 'LAPTOP-42', id: 8, url: 'https://wiki.example/link/8' };
-  desk.addAssets('HD-BASE', [asset]);
-  desk.addAssets('HD-SHARED-ASSET', [asset]);
-  let related = desk.getTicket('HD-BASE').related_tickets;
-  assert.deepEqual(related.map(row => row.key), ['HD-SHARED-ASSET', 'HD-SAME-REQUESTER']);
-  assert.ok(related.every(row => row.key !== 'HD-BASE' && row.key !== 'HD-UNRELATED'));
-  const other = desk.getTicket('HD-SAME-REQUESTER');
-  desk.updateTicket(other.key, { status: 'resolved', resolution: 'Reinstalled the display driver.' }, { version: other.version });
-  related = desk.getTicket('HD-BASE').related_tickets;
-  assert.equal(related.find(row => row.key === other.key).resolution, 'Reinstalled the display driver.');
-  for (let i = 0; i < 12; i++) createTicket(store, `HD-EXTRA-${i}`);
-  assert.equal(desk.getTicket('HD-BASE').related_tickets.length, 8);
-});
-
-test('manual asset links normalize and deduplicate, retry safely, and persist audit attribution on completion', t => {
-  const { desk, store } = fixture(t);
-  createTicket(store);
-  const actor = { id: 'operator-id', name: 'Morgan Lee' };
-  assert.deepEqual(desk.queueAssetLink('HD-TEST1', ' laptop-42 ', actor), { queued: true, ref: 'LAPTOP-42' });
-  desk.queueAssetLink('HD-TEST1', 'LAPTOP-42', actor);
-  assert.equal(desk.pendingAssetLinks().length, 1);
-  assert.deepEqual(desk.pendingAssetLinks()[0].actor, actor);
-  desk.failAssetLink('HD-TEST1', 'LAPTOP-42', new Error('private upstream body'));
-  assert.equal(desk.pendingAssetLinks().length, 0);
-  const failed = desk.getTicket('HD-TEST1').pending_asset_links[0];
-  assert.equal(failed.attempts, 1);
-  assert.ok(!failed.error.includes('private upstream'));
-  assert.equal(desk.pendingAssetLinks(Date.now() + 10000).length, 1);
-  const version = desk.getTicket('HD-TEST1').version;
-  let ticket = desk.completeAssetLink('HD-TEST1', 'LAPTOP-42', { id: 3, url: 'https://wiki.example/link/3' });
-  assert.equal(ticket.version, version + 1);
-  assert.equal(ticket.pending_asset_links.length, 0);
-  assert.equal(ticket.assets[0].ref, 'LAPTOP-42');
-  assert.equal(ticket.events.filter(e => e.type === 'asset_link').length, 1);
-  assert.equal(ticket.events.find(e => e.type === 'asset_link').actor_name, actor.name);
-  ticket = desk.completeAssetLink('HD-TEST1', 'LAPTOP-42', { id: 3, url: 'https://wiki.example/link/3' });
-  assert.equal(ticket.version, version + 1);
-  assert.deepEqual(desk.queueAssetLink('HD-TEST1', 'laptop-42', actor), { queued: false, linked: true, ref: 'LAPTOP-42' });
-  for (const invalid of ['', '../unsafe/path', '<script>', 'id with spaces', 'A'.repeat(65)]) assert.throws(() => desk.queueAssetLink('HD-TEST1', invalid, actor), e => e.statusCode === 400);
-  assert.throws(() => desk.queueAssetLink('missing', 'PC-42', actor), e => e.statusCode === 404);
-});
-
-test('manual asset link queues survive database reopen with retry details intact', t => {
-  const dir = mkdtempSync(join(tmpdir(), 'assetdesk-links-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const filename = join(dir, 'desk.sqlite');
-  let store = new Store(filename), desk = new DeskStore(store);
-  createTicket(store);
-  desk.queueAssetLink('HD-TEST1', 'PC-27', { id: 'staff-id', name: 'Technician' });
-  desk.failAssetLink('HD-TEST1', 'PC-27', { safeMessage: 'BookStack API is unavailable.' });
-  store.close();
-  store = new Store(filename); desk = new DeskStore(store);
-  assert.equal(desk.getTicket('HD-TEST1').pending_asset_links[0].error, 'BookStack API is unavailable.');
-  assert.deepEqual(desk.pendingAssetLinks(Date.now() + 10000)[0], { key: 'HD-TEST1', ref: 'PC-27', actor: { id: 'staff-id', name: 'Technician' } });
-  store.close();
 });
 
 test('initial email capture preserves triage edited while remote ticket creation was retrying', async t => {

@@ -1,86 +1,39 @@
-# Deploy and test AssetDesk
+# Install, upgrade, and test AssetDesk
 
-## Get the code
+AssetDesk now runs as one self-contained application. It uses SQLite for tickets, knowledge, category permissions, personnel/equipment assets, images, and account data. There is no runtime BookStack or MariaDB dependency.
+
+## Fresh installation with Docker Desktop
+
+Install Git and Node.js 24, start Docker Desktop using Linux containers, then open PowerShell or a terminal:
 
 ```sh
 git clone https://github.com/JoshMarzic/AssetDesk.git
 cd AssetDesk
-```
-
-Requires **Docker Engine/Desktop, Compose v2, Node.js 24, and npm**. Use a Bash-compatible terminal for examples. Private `.env`, dependencies, and database data are excluded from Git; each fresh installation generates its own credentials.
-
-## Test with Docker Desktop
-
-Start Docker Desktop using Linux containers, then run:
-
-```sh
-npm ci
 node scripts/setup.mjs
-docker compose up -d --wait db bookstack
-node scripts/bootstrap-bookstack.mjs
 docker compose up -d --build --wait assetdesk
-npm test
-docker compose ps
 ```
 
-Desktop's Containers view should show database, BookStack, and AssetDesk under the Compose project, all healthy.
+Docker Desktop's Containers view should show a healthy `assetdesk` service. On that computer, open `http://localhost:3000` and sign in using `DASHBOARD_ADMIN_EMAIL` and `DASHBOARD_ADMIN_PASSWORD` from the generated private `.env`. The initial email is `admin@assetdesk.local` unless changed before first startup. Later restarts preserve your account and password; changing bootstrap variables does not reset an existing password.
 
-On the computer running Docker, open the **dashboard at `http://localhost:3000`**. In private `.env`, find `DASHBOARD_ADMIN_EMAIL` (initially `admin@assetdesk.local`) and generated `DASHBOARD_ADMIN_PASSWORD`. Sign in and use Team to create technicians. These are separate from API tokens and BookStack users. Later restarts preserve accounts; editing bootstrap password variables does not reset existing accounts.
+No BookStack account, API token, extra database service, or second browser login is needed.
 
-**Knowledge base and asset records open inside the dashboard**, using the same session. Technicians do not need another login or browser page for normal documentation work. BookStack's separate administration interface remains at `http://localhost:6875` when needed: its development login is `admin@admin.com` with `BOOKSTACK_ADMIN_PASSWORD` from `.env`. The bootstrap replaces only the stock password; customized logins remain unchanged.
+## Try the native workflow
 
-Verify the dashboard workflow and create labeled sample records against the real stack:
+1. Create technicians in Team and share their initial passwords securely.
+2. Create a ticket, choose priority/category, and assign a technician or use Assign to me. The saved ticket opens immediately.
+3. Add internal notes, insert a shared response template, and explicitly mark a first response after contacting the requester. These operations do not send customer email.
+4. Enter a resolution summary before marking Resolved, then close the request after confirmation. Check the ticket's activity history.
+5. In Assets, create a Personnel record, then a PC or laptop and select that person as its owner. Add equipment details, location, lifecycle status, and notes.
+6. Mention or manually link that asset ID on a ticket. Open the asset: its linked-ticket section should show that request and provide a link back to it.
+7. Open Knowledge base. The Assets area contains asset records and can also contain asset documentation. Create an article in a category you may edit.
+8. As an administrator, create a Restricted category and grant a named technician read and/or edit access. Verify another technician cannot find its category/articles in navigation, search, direct URLs, or media requests. Administrators retain access.
+9. Open Actions in the left navigation. It is deliberately a placeholder for future automations, with no runnable actions yet.
 
-```sh
-node --env-file=.env scripts/desk-smoke.mjs
-node --env-file=.env scripts/smoke.mjs
-```
-
-The desk smoke checks login, technician creation, manual tickets, assignment, notes, resolution, metadata sync, and logout; it deactivates its temporary technician afterward. The original smoke checks raw-mail intake and asset linking. They print `PASS` on success and send no external email. Both create example records, so use a development instance. For browser automation, including saved responses, asset linking, fast local ticket creation, and embedded knowledge work, run `npm run test:browser` with Playwright's Chromium or a compatible installed Chromium.
-
-## Try the service-desk workflow
-
-1. In Team, create a named technician and securely share their initial password. Invitations and password-reset emails are not sent automatically.
-2. Select New ticket, enter requester/issue details, choose priority/category, and assign the technician. The saved ticket opens without waiting for BookStack. Work it immediately in the queue or My Tickets while wiki pages and asset links synchronize in the background. A technician can also claim a ticket using Assign to me.
-3. Open it, move to In Progress, and add an internal work note. Try inserting a shared saved response; check that `{{requester}}`, `{{technician}}`, `{{ticket_id}}`, and `{{subject}}` expand for the current ticket. Copy a rendered response for your existing email client if needed. Explicitly mark first response after contacting the requester; these actions do not send email.
-4. Enter a resolution summary before selecting Resolved, then Close after confirmation. Check activity history and dashboard counts.
-5. Mention an asset ID in an issue, open its embedded asset record to edit owner/location, then create another request mentioning that ID. Expect the same asset and preserved ownership details after synchronization. Also manually associate an asset from the ticket drawer: choose a known asset or enter an explicit ID. Its durable queue updates links on both the ticket and asset BookStack pages when the wiki is reachable.
-6. Open Related Tickets to find other requests sharing the asset or requester. As an administrator, create/edit a shared response template and archive one you no longer use. Technicians can use the shared library but cannot administer templates.
-7. Select Knowledge base, create an article, browse/search it, and edit it without signing into BookStack. Administrators can create chapters. Asset records are editable in this same reader; ticket documentation mirrors are read-only.
-
-Knowledge articles use a BookStack book named **Knowledge Base** by default. To reuse an existing book, set `BOOKSTACK_KNOWLEDGE_BOOK_ID` to its numeric ID in `.env` and recreate the AssetDesk container. The integration account needs access to that book. Search stays within the selected knowledge book; embedded asset/ticket records are limited to the books managed by AssetDesk. All dashboard staff share this managed-content access through the service account.
-
-Article HTML is sanitized server-side. Supported existing BookStack raster images are displayed through an authenticated AssetDesk proxy; external images, image uploads, and attachments are not supported by the embedded editor. Saving checks the article version to detect a newer edit, though BookStack's API cannot make the final check/write atomic with a simultaneous external wiki save.
-
-Response/resolution targets are elapsed wall-clock indicators documented in README.md. Waiting does not pause them, and reopening retains creation-time deadlines. There are no business-hour calendars or automatic escalations.
-
-Deliver a sample email through the bridge without a mail server:
-
-```sh
-node --env-file=.env scripts/forward-email.mjs <<'MAIL'
-From: Taylor Example <taylor@example.com>
-To: helpdesk@example.com
-Message-ID: <manual-test-1@example.com>
-Subject: LAPTOP-1042 will not start
-Content-Type: text/plain; charset=utf-8
-
-My LAPTOP-1042 will not start after an update.
-MAIL
-```
-
-The ticket is available locally as soon as intake accepts it. Asset-page creation and links follow in the background; the ticket shows their synchronization state separately. Redelivering the same Message-ID should not create a duplicate; use a new ID for a distinct issue. Requester replies with valid thread headers join and reopen resolved/closed tickets, including when their wiki mirror is still pending; subject text alone does not establish a thread.
-
-A remote workspace's loopback ports are not your laptop's loopback ports. Run locally, use the platform's supported port forwarding, or deploy on your server. For your own SSH-accessible server configured with local URLs, a temporary tunnel is:
-
-```sh
-ssh -L 3000:127.0.0.1:3000 -L 6875:127.0.0.1:6875 user@your-server
-```
-
-This does not imply that the managed development workspace provides SSH access.
+All-staff categories can allow or deny staff editing. Restricted categories use named-reader/editor grants. Editing or moving a record requires the appropriate category access. Personnel inventory records are separate from technician login accounts.
 
 ## Upgrade an existing installation
 
-Back up all persistent volumes and private `.env`, then run:
+Keep the same checkout directory and Compose project name so the original `intake` volume is reused. Back up your private `.env` and all existing volumes before upgrading. If using the older wiki-based installation, preserve its `database` and `bookstack` volumes as well.
 
 ```sh
 git pull
@@ -88,49 +41,82 @@ node scripts/setup.mjs
 docker compose up -d --build --wait assetdesk
 ```
 
-Setup fills missing settings and preserves nonempty configuration. SQLite migrates in place without discarding accepted mail, accounts, passwords, or ticket-page mappings. Old tickets without dashboard workflow fields start in Open for triage. Sign in on port 3000 with your existing account; this update needs no new password.
+The new service keeps existing accounts, accepted email, tickets, notes, sessions, and response templates. It converts locally stored asset references and ticket links into native assets. The new default Compose file contains only AssetDesk; any old wiki/database containers are left as orphans rather than deleted. Do not use `--remove-orphans` until any desired legacy content has been imported and verified.
 
-Keep the `intake` volume. Do not rerun BookStack bootstrap as a routine upgrade; refresh a genuinely expiring API token through the appropriate development or production administration path. Dashboard status/assignment remains authoritative. Moving wiki pages does not update the dashboard; managed metadata syncs one way to BookStack tags, with retries after outages. Tickets remain editable while BookStack is unavailable; knowledge reading/editing still needs the wiki connection.
+An orphan warning during this transition is expected. The native service itself does not read the old BookStack environment variables or require those containers to be available.
+
+## Import existing BookStack documentation once
+
+Skip this section for a fresh installation or if you have no legacy documents to retain.
+
+The explicit migration helper imports accessible knowledge books/chapters, detailed asset pages, supported inline images, and native internal links. Existing local ticket data stays authoritative; generated ticket-mirror pages are skipped. It does not automatically translate BookStack user permissions: **all imported categories start restricted to administrators**. Review them and assign AssetDesk reader/editor grants afterward.
+
+1. Keep the original `.env` entries for `BOOKSTACK_URL`, `BOOKSTACK_PUBLIC_URL`, `BOOKSTACK_TOKEN_ID`, and `BOOKSTACK_TOKEN_SECRET`. They are read only by the migration command, not by the native server. Preserve `DB_PASSWORD`, `DB_ROOT_PASSWORD`, and `BOOKSTACK_APP_KEY` if you might need to restart the bundled legacy services. Never paste these values into chat or commit them.
+2. If the old wiki/database containers are still running, leave them running for the import. If they were stopped, the optional legacy Compose file can start them using their retained volumes:
+
+   ```sh
+   docker compose -f compose.legacy.yaml up -d --wait db bookstack
+   ```
+
+   Use the same original project name. For a custom project, supply your original `COMPOSE_PROJECT_NAME` as before. Do not start these definitions against empty volumes expecting them to contain your old documents.
+3. Build/start the native application first using the upgrade commands above. This initializes native tables and ensures an active administrator exists.
+4. Run the helper from the checkout on the host:
+
+   ```sh
+   node scripts/import-bookstack.mjs --container
+   ```
+
+   It securely passes legacy connection settings on stdin to a one-off native application container. It stops AssetDesk while writing, creates a consistent `assetdesk.sqlite.pre-native-import-<timestamp>.sqlite` backup in the retained `intake` volume, and restarts the service after success or failure. It neither deletes legacy content nor resets accounts. The original `http://bookstack:80` internal URL works when the old containers remain attached to the same Compose project network.
+5. Sign in as an administrator. Review the summary counts and imported categories, articles, asset ownership, images, and linked tickets. Imported asset metadata is placed in a restricted imported asset category; native ticket backlinks remain attached to the same asset IDs. Already maintained native asset fields and their category permissions are preserved; the legacy page is still copied into restricted documentation. Unknown internal links become text. Unavailable images are reported; correct the prerequisite and rerun while keeping the old source available.
+6. Grant the intended readers/editors in category settings. Completed imports are skipped on rerun; later native edits are preserved. An interrupted import can resume, including images that were temporarily unavailable. If you edit an incompletely imported article yourself, the helper preserves your edit instead of replacing it.
+7. After verification, stop the obsolete services while retaining their volumes/backups:
+
+   ```sh
+   docker compose -f compose.legacy.yaml stop bookstack db
+   ```
+
+   AssetDesk continues running by itself. Keep the legacy backups until you are satisfied that the native records contain what you need.
+
+For a host-managed native database instead of the Compose volume, stop that server process and run:
+
+```sh
+BOOKSTACK_URL=http://127.0.0.1:6875 node scripts/import-bookstack.mjs --database ./data/assetdesk.sqlite
+```
+
+The helper uses the existing private `.env` for the remaining legacy settings. A configured `BOOKSTACK_KNOWLEDGE_BOOK_ID` limits knowledge import to that book, while still importing the legacy Assets book. Without it, accessible non-ticket books are imported. Images must be supported raster files served by the configured legacy wiki; arbitrary external images are not downloaded. The helper and its isolated client are under `migration/` and are never loaded by normal application startup.
 
 ## Deploy on a Linux server with HTTPS
 
-This example uses a Linux server with Docker, Compose v2, Node.js 24/npm, and **Caddy installed on the host**. It is a deployment recipe, not automatic server provisioning.
+This example assumes Docker, Compose v2, Node.js 24/npm, and Caddy installed as a host service. It is a deployment recipe, not automatic server provisioning.
 
-1. Point `helpdesk.example.com` at the server for the dashboard. This recipe also uses `wiki.example.com` for optional native BookStack administration; technicians do not need that site for normal work. Allow inbound TCP 80/443 and keep the database/application ports private. Replace example domains throughout.
-2. Clone/copy source to `/opt/assetdesk` and prepare private configuration:
+1. Point `helpdesk.example.com` at the server and allow inbound TCP ports 80 and 443. Keep the application port private.
+2. Clone/copy the source to `/opt/assetdesk`, then run:
 
    ```sh
    cd /opt/assetdesk
-   npm ci
    node scripts/setup.mjs
    ```
 
-3. Before first startup edit `.env`:
+3. Edit private `.env` before first startup:
 
    ```dotenv
-   BOOKSTACK_PUBLIC_URL=https://wiki.example.com
    DASHBOARD_ADMIN_EMAIL=desk-admin@example.com
    COOKIE_SECURE=true
    TRUST_PROXY_HOPS=1
    ```
 
-   Retain the private generated `DASHBOARD_ADMIN_PASSWORD` for the initial login; later restarts preserve accounts/passwords. `TRUST_PROXY_HOPS=1` trusts the single host-Caddy hop so browser login limits use each client's forwarded IP instead of sharing Caddy's address. Use this only with the application bound to loopback and accessible through that trusted proxy. The default is `0` for direct access; supported values are 0–5 for a known proxy chain. Keep Compose's internal BookStack routing unchanged. For an existing wiki whose URL changes, follow `bookstack:update-url` before creating new links.
-
-4. Start the database and wiki:
+   Retain the generated `DASHBOARD_ADMIN_PASSWORD` for the first login. `TRUST_PROXY_HOPS=1` trusts this single host-Caddy hop so rate limiting uses the forwarded client address. Leave its default `0` for direct access; only configure a known trusted proxy chain, with AssetDesk bound to loopback.
+4. Build and start the application:
 
    ```sh
-   docker compose up -d --wait db bookstack
+   docker compose up -d --build --wait assetdesk
    ```
 
-5. Add these sites to the host's `/etc/caddy/Caddyfile` and reload Caddy. DNS and inbound 80/443 must work for automatic certificates.
+5. Add this host Caddy site and reload Caddy:
 
    ```caddyfile
    helpdesk.example.com {
        reverse_proxy 127.0.0.1:3000
-   }
-
-   wiki.example.com {
-       reverse_proxy 127.0.0.1:6875
    }
    ```
 
@@ -138,41 +124,22 @@ This example uses a Linux server with Docker, Compose v2, Node.js 24/npm, and **
    sudo systemctl reload caddy
    ```
 
-   Caddy here is a host service; in a proxy container, `127.0.0.1` points to that container and requires different networking. With `COOKIE_SECURE=true`, use the HTTPS dashboard address; secure session cookies are not sent over HTTP.
-
-6. Restrict first-run wiki access to yourself. For production use native BookStack administration rather than the development bootstrap. A fresh BookStack database begins with `admin@admin.com` / `password`: **change that password immediately**, configure your real administrator, and disable guests. `BOOKSTACK_ADMIN_PASSWORD` is applied only by development bootstrap, not by Compose itself.
-7. Create a dedicated BookStack integration role/user. Grant Access system API and content view/create/update on required shelves, books, chapters, and pages. Initial provisioning needs permission to create the help desk structure. No user-management, settings, or deletion rights are needed. Create an API token and securely replace `.env` placeholders:
-
-   ```dotenv
-   BOOKSTACK_TOKEN_ID=<token ID from BookStack>
-   BOOKSTACK_TOKEN_SECRET=<token secret from BookStack>
-   ```
-
-   Restrict accessible content after provisioning, including the selected Knowledge Base book and the AssetDesk Assets/Tickets books. Dashboard users access that managed content through the integration account, without separate wiki sessions. Manage direct BookStack administration accounts separately.
-
-8. Start AssetDesk and check readiness:
-
-   ```sh
-   docker compose up -d --build --wait assetdesk
-   docker compose ps
-   curl --fail http://127.0.0.1:3000/readyz
-   ```
-
-   Expect `{"status":"ready"}` for local service-desk/SQLite readiness. BookStack can be temporarily unavailable without preventing ticket work. Its separate bearer-authenticated health endpoint is `/api/bookstack/health`; knowledge reading/editing and wiki synchronization require that connection. Sign in at the HTTPS dashboard with the initial dashboard email/password, create technician accounts, and test a staging request. Do not use bearer tokens as browser credentials.
-
-For an intentional integration smoke run against the HTTPS wiki, use `SMOKE_BOOKSTACK_URL=https://wiki.example.com node --env-file=.env scripts/smoke.mjs`; it creates sample data. `npm test` runs automated suites without a public deployment.
+   Public DNS and inbound 80/443 must work for certificate issuance. A proxy container needs a different networking configuration because its `127.0.0.1` refers to itself. With secure cookies enabled, use the HTTPS address in your browser.
+6. Sign in, create named technician accounts, configure category permissions, and test a staging ticket and asset. No second wiki hostname or database server is required.
 
 ## Connect a support mailbox
 
-AssetDesk accepts mail but does not poll Microsoft 365, Gmail, or IMAP. Route a dedicated address through an MTA delivery pipe or provider adapter. For pipe delivery, execute as a restricted user with complete raw mail on stdin:
+AssetDesk accepts complete raw RFC 822/MIME email but does not poll Microsoft 365, Gmail, or IMAP. Configure your MTA or a provider adapter to deliver mail to the authenticated intake endpoint.
+
+For pipe delivery, run as a restricted mail-delivery user:
 
 ```sh
 node --env-file=/secure/path/assetdesk-mail.env /opt/assetdesk/scripts/forward-email.mjs
 ```
 
-Give that private mail file only `INBOUND_EMAIL_TOKEN` and `ASSETDESK_INBOUND_URL`, not full application credentials. On the same host use `http://127.0.0.1:3000/api/inbound/email`.
+Give that private mail file only `INBOUND_EMAIL_TOKEN` and `ASSETDESK_INBOUND_URL`. If the mail gateway is on the same host, use `http://127.0.0.1:3000/api/inbound/email`.
 
-For a remote gateway, add an intake DNS name and expose only this path through Caddy:
+For a gateway on another host, point an intake hostname at the server and expose only its inbound route through Caddy:
 
 ```caddyfile
 intake.example.com {
@@ -188,21 +155,31 @@ intake.example.com {
 }
 ```
 
-Set the gateway's private URL to `https://intake.example.com/api/inbound/email`. Send raw MIME with `Content-Type: message/rfc822` and `Authorization: Bearer <INBOUND_EMAIL_TOKEN>`. Parsed-JSON webhooks require adapters. Apply sender/recipient restrictions, spam filtering, SPF/DKIM/DMARC, and provider signature validation at the gateway; From is not authentication. Keep Message-IDs during retries. The bridge exits 75 for temporary failures and 65 for invalid/oversized messages. Limits are 10 MiB raw mail and 100,000 decoded text characters.
+The gateway sends `Content-Type: message/rfc822` and `Authorization: Bearer <INBOUND_EMAIL_TOKEN>`. Parsed-JSON webhooks need an adapter that verifies signatures and preserves MIME. Apply sender/recipient restrictions, spam filtering, SPF/DKIM/DMARC, and provider authentication at the trusted gateway. From headers alone do not authenticate people.
 
-## Restart, troubleshoot, and retain data
+Retain Message-IDs on retries. The bridge exits 75 for temporary failure and 65 for invalid/oversized mail. Limits are 10 MiB raw mail and 100,000 decoded text characters. Tickets and asset links are stored locally; HTTP success means durable acceptance. Requester replies can reopen existing tickets; subject text alone does not establish a thread.
+
+## Validate and operate
 
 ```sh
-docker compose up -d --wait
+npm ci
+npm test
+npm run test:browser
 docker compose ps
-docker compose logs --tail=100 assetdesk bookstack
 curl --fail http://127.0.0.1:3000/readyz
 ```
 
-Keep private `.env` and back up/restore all three volumes together: `database` (MariaDB), `bookstack` (wiki files), and `intake` (SQLite queue, workflow, accounts, notes, sessions, history, shared response templates, and queued manual asset associations). Use database-aware MariaDB backups and consistent SQLite backups; a running SQLite database can have WAL/SHM files. Use one AssetDesk instance per SQLite database.
+Smoke commands create labeled development records, so use a test instance. Browser automation requires Playwright Chromium or a compatible installed Chromium. Native tests exercise category grants, direct-URL/media authorization, asset relationships, personnel ownership, ticket history, email intake, account roles, and migration.
 
-`docker compose down` retains data. **`docker compose down -v` deletes it.** Refresh expiring BookStack API tokens through native production administration. Keep credentials out of Git and logs.
+Restart/troubleshoot with:
 
-The companion no longer waits for the wiki container's health before it can start. A pending/failed BookStack mirror is a synchronization issue, not a missing local ticket. Administrators can inspect `/api/queue` and `/api/receipts/:id` using `ADMIN_TOKEN`, correct the connection/permission problem, and retry a failed receipt with `POST /api/receipts/:id/retry`. Do not delete the queue to clear a wiki outage.
+```sh
+docker compose up -d --wait assetdesk
+docker compose logs --tail=100 assetdesk
+```
 
-Internal notes and first-response flags do not send email. Outbound replies/acknowledgements, attachments, mailbox hosting, business-hours calendars, and automatic escalation are not supplied by the bundled stack.
+Back up the retained `intake` volume and private `.env` together. The SQLite database holds accounts, tickets, accepted email, notes, sessions, responses, categories, access grants, native assets, images, and migration maps. Use a consistent SQLite backup that includes committed WAL data. Run only one AssetDesk service per SQLite database.
+
+`docker compose down` retains data. **`docker compose down -v` deletes the native database volume.** Old `database` and `bookstack` volumes should only be removed separately after their content has been backed up and the import verified.
+
+Actions is a placeholder only. Outgoing customer email, attachments, invitations/reset emails, business-hour calendars, and active automation execution are not supplied by this release.

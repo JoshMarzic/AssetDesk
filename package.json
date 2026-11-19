@@ -1,9 +1,9 @@
 {
   "name": "assetdesk",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
-  "description": "A technician service desk with email intake and BookStack asset records",
+  "description": "Self-contained IT service desk, knowledge base, and personnel and equipment inventory",
   "engines": {
     "node": ">=24"
   },

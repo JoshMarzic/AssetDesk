@@ -16,7 +16,7 @@ function authorized(token) {
   };
 }
 
-export function createApp({ store, worker, bookstack, config, desk }) {
+export function createApp({ store, worker, workspace, config, desk }) {
   const app = express();
   app.set('trust proxy', config.trustProxyHops || false);
   app.disable('x-powered-by');
@@ -29,7 +29,7 @@ export function createApp({ store, worker, bookstack, config, desk }) {
   });
   const admin = authorized(config.adminToken);
   const intake = authorized(config.inboundToken);
-  if (desk) app.use('/api/desk', createDeskRouter({ desk, store, worker, bookstack, config }));
+  if (desk) app.use('/api/desk', createDeskRouter({ desk, store, worker, workspace, config }));
   app.use(express.static(fileURLToPath(new URL('../public', import.meta.url)), { index: 'index.html', maxAge: 0 }));
   app.get('/healthz', (_req, res) => res.json({ status: 'ok' }));
   app.get('/readyz', async (_req, res) => {
@@ -39,10 +39,6 @@ export function createApp({ store, worker, bookstack, config, desk }) {
     } catch {
       res.status(503).json({ status: 'unavailable', error: 'The local ticket database is unavailable.' });
     }
-  });
-  app.get('/api/bookstack/health', admin, async (_req, res) => {
-    try { await bookstack.checkHealth(); res.json({ status: 'ready' }); }
-    catch { res.status(503).json({ status: 'unavailable', error: 'BookStack is unavailable or API permissions are incomplete.' }); }
   });
   function accepted(message, res) {
     const receipt = worker.accept(message);
@@ -71,7 +67,7 @@ export function createApp({ store, worker, bookstack, config, desk }) {
   app.get('/api/receipts/:id', admin, (req, res) => {
     const receipt = store.receipt(req.params.id);
     if (!receipt) return res.status(404).json({ error: 'Receipt not found.' });
-    res.json({ ...receipt, ticket: receipt.ticketKey ? store.ticket(receipt.ticketKey) : null });
+    res.json({ ...receipt, ticket: receipt.ticketKey ? desk.getTicket(receipt.ticketKey) : null });
   });
   app.post('/api/receipts/:id/retry', admin, (req, res) => {
     if (!store.retry(req.params.id)) return res.status(409).json({ error: 'Only failed receipts can be retried.' });
@@ -79,7 +75,7 @@ export function createApp({ store, worker, bookstack, config, desk }) {
     res.status(202).json(store.receipt(req.params.id));
   });
   app.get('/api/tickets/:key', admin, (req, res) => {
-    const ticket = store.ticket(req.params.key);
+    const ticket = desk.getTicket(req.params.key);
     if (!ticket) return res.status(404).json({ error: 'Ticket not found.' });
     res.json(ticket);
   });
