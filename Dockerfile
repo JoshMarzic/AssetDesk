@@ -6,6 +6,7 @@ RUN --mount=type=secret,id=proxy_ca \
     if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
     npm ci --omit=dev --strict-ssl=true
 COPY --chown=node:node src ./src
+COPY --chown=node:node public ./public
 RUN mkdir /data && chown node:node /data
 USER node
 ENV NODE_ENV=production PORT=3000 DATABASE_PATH=/data/assetdesk.sqlite

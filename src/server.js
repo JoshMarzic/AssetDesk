@@ -3,14 +3,19 @@ import { Worker } from './worker.js';
 import { BookStackClient } from './bookstack.js';
 import { createApp } from './app.js';
 import { configFromEnv } from './config.js';
+import { DeskStore } from './desk-store.js';
 
 const config = configFromEnv();
 const store = new Store(config.databasePath);
+const desk = new DeskStore(store);
+if (config.dashboardAdminPassword) {
+  await desk.ensureAdmin({ email: config.dashboardAdminEmail, name: 'Desk administrator', password: config.dashboardAdminPassword });
+}
 const bookstack = new BookStackClient(config.bookstack);
-const worker = new Worker({ store, bookstack, supportEmails: config.supportEmails });
-const app = createApp({ store, worker, bookstack, config });
+const worker = new Worker({ store, bookstack, desk, supportEmails: config.supportEmails });
+const app = createApp({ store, worker, bookstack, config, desk });
 const server = app.listen(config.port, '0.0.0.0', () => {
-  console.log(`AssetDesk intake listening on port ${config.port}`);
+  console.log(`AssetDesk service desk listening on port ${config.port}`);
   worker.start();
 });
 server.requestTimeout = 30_000;

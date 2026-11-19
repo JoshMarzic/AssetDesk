@@ -293,3 +293,13 @@ test('configuration validates credentials, URL schemes and service port', () => 
     assert.throws(() => configFromEnv({ ...env, ...override }));
   }
 });
+
+test('delayed BookStack processing preserves original intake time for SLA calculations', async t => {
+  const {store,worker}=await harness(t);
+  const message=await parseRawEmail(rawEmail({id:'delayed-intake'}));
+  message.receivedAt='2026-10-01T10:00:00.000Z';
+  const accepted=store.accept(message);
+  await worker.wake();
+  const ticket=store.ticket(store.receipt(accepted.id).ticketKey);
+  assert.equal(ticket.created_at,message.receivedAt);
+});

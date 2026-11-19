@@ -148,3 +148,28 @@ test('concurrent callers share a single workspace setup and failures permit retr
   await assert.rejects(client.ensureWorkspace(), /Temporary API failure/);
   assert.equal(client.workspacePromise, null);
 });
+
+test('ticket property sync preserves wiki content and custom tags without duplicating revisions', async () => {
+  let page = { id: 3, html: '<p>Manually maintained documentation</p>', tags: [{name:'Ticket ID',value:'HD-123'}, {name:'Custom',value:'Keep'}, {name:'Priority',value:'normal'}] };
+  const {client,calls} = api(({method,body}) => method === 'GET' ? page : (page={...page,...body}));
+  const ticket={key:'HD-123',page_id:3,status:'in_progress',priority:'high',category:'hardware',assignee:{name:'Morgan Lee'}};
+  await client.syncTicketMetadata(ticket);
+  await client.syncTicketMetadata(ticket);
+  const puts=calls.filter(call=>call.method==='PUT');
+  assert.equal(puts.length,1);
+  assert.equal(puts[0].body.html,undefined);
+  assert.equal(page.html,'<p>Manually maintained documentation</p>');
+  assert.ok(page.tags.some(tag=>tag.name==='Custom'&&tag.value==='Keep'));
+  assert.ok(page.tags.some(tag=>tag.name==='Assigned technician'&&tag.value==='Morgan Lee'));
+  assert.deepEqual(page.tags.filter(tag=>tag.name==='Priority'),[{name:'Priority',value:'high'}]);
+});
+
+test('manual asset links preserve ticket edits and are safe to retry', async () => {
+  let page={id:7,raw_html:'<p>Existing investigation</p>',tags:[{name:'Ticket ID',value:'HD-123'}]};
+  const {client,calls}=api(({method,body})=>method==='GET'?page:(page={...page,...body,raw_html:body.html}));
+  await client.linkAssetToTicket({id:7},{id:8,ref:'PC-902'});
+  await client.linkAssetToTicket({id:7},{id:8,ref:'PC-902'});
+  assert.equal(calls.filter(call=>call.method==='PUT').length,1);
+  assert.ok(page.raw_html.startsWith('<p>Existing investigation</p>'));
+  assert.ok(page.tags.some(tag=>tag.name==='Affected asset'&&tag.value==='PC-902'));
+});

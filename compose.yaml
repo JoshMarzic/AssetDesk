@@ -54,6 +54,10 @@ services:
       BOOKSTACK_TOKEN_SECRET: ${BOOKSTACK_TOKEN_SECRET:?Run node scripts/setup.mjs}
       INBOUND_EMAIL_TOKEN: ${INBOUND_EMAIL_TOKEN:?Run node scripts/setup.mjs}
       ADMIN_TOKEN: ${ADMIN_TOKEN:?Run node scripts/setup.mjs}
+      DASHBOARD_ADMIN_EMAIL: ${DASHBOARD_ADMIN_EMAIL:-admin@assetdesk.local}
+      DASHBOARD_ADMIN_PASSWORD: ${DASHBOARD_ADMIN_PASSWORD:?Run node scripts/setup.mjs}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-0}
       ASSET_PREFIXES: ${ASSET_PREFIXES:-ASSET,LAPTOP,DESKTOP,PC,SRV,SERVER,PRINTER,MONITOR,SW}
       SUPPORT_EMAILS: ${SUPPORT_EMAILS:-}
       DATABASE_PATH: /data/assetdesk.sqlite

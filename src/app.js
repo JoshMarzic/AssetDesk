@@ -1,6 +1,8 @@
 import express from 'express';
 import { timingSafeEqual } from 'node:crypto';
 import { parseRawEmail } from './email.js';
+import { fileURLToPath } from 'node:url';
+import { createDeskRouter } from './desk-routes.js';
 
 function authorized(token) {
   return (req, res, next) => {
@@ -14,16 +16,21 @@ function authorized(token) {
   };
 }
 
-export function createApp({ store, worker, bookstack, config }) {
+export function createApp({ store, worker, bookstack, config, desk }) {
   const app = express();
+  app.set('trust proxy', config.trustProxyHops || false);
   app.disable('x-powered-by');
   app.use((req, res, next) => {
     res.set('Cache-Control', 'no-store');
     res.set('X-Content-Type-Options', 'nosniff');
+    res.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+    res.set('Referrer-Policy', 'same-origin');
     next();
   });
   const admin = authorized(config.adminToken);
   const intake = authorized(config.inboundToken);
+  if (desk) app.use('/api/desk', createDeskRouter({ desk, store, worker, bookstack, config }));
+  app.use(express.static(fileURLToPath(new URL('../public', import.meta.url)), { index: 'index.html', maxAge: 0 }));
   app.get('/healthz', (_req, res) => res.json({ status: 'ok' }));
   app.get('/readyz', async (_req, res) => {
     try {

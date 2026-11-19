@@ -68,10 +68,11 @@ export class Store {
     return false;
   }
   ticket(key) { return this.db.prepare('SELECT * FROM tickets WHERE key=?').get(key); }
-  saveTicket({ key, requester, subject, page_id, page_url }) {
+  saveTicket({ key, requester, subject, page_id, page_url, created_at }) {
+    const createdAt = created_at && Number.isFinite(Date.parse(created_at)) ? new Date(created_at).toISOString() : new Date().toISOString();
     this.db.prepare(`INSERT INTO tickets (key,requester,subject,page_id,page_url,created_at)
       VALUES (?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET page_id=excluded.page_id,page_url=excluded.page_url`)
-      .run(key, requester, subject, page_id, page_url, new Date().toISOString());
+      .run(key, requester, subject, page_id, page_url, createdAt);
     return this.ticket(key);
   }
   complete(id, key) {

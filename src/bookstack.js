@@ -97,7 +97,7 @@ export class BookStackClient {
   async createWorkspace() {
     const books = await this.list('/books');
     const ensureBook = async (name, description) => books.find(b => b.name === name) || this.request('/books', { method: 'POST', body: { name, description } });
-    const ticketBook = await ensureBook('Tickets', 'IT support requests. Move tickets between chapters to track progress; use page tags for assignment and priority.');
+    const ticketBook = await ensureBook('Tickets', 'IT support requests linked to the AssetDesk dashboard. Manage status, assignment, priorities and due times in AssetDesk; ticket tags mirror those fields.');
     const assetBook = await ensureBook('Assets', 'Equipment inventory, ownership, support history, and lifecycle details. Keep the Asset ID tag unchanged so email intake can find each record.');
     const shelves = await this.list('/shelves');
     let shelf = shelves.find(s => s.name === 'IT Help Desk');
@@ -165,7 +165,7 @@ export class BookStackClient {
     return this.createPage({
       chapter_id: workspace.openChapter.id,
       name: `${key} · ${subject || '(No subject)'}`.slice(0, 255),
-      html: `<h1>${escapeHtml(subject || '(No subject)')}</h1><table><tbody><tr><th>Ticket</th><td>${escapeHtml(key)}</td></tr><tr><th>Requester</th><td>${escapeHtml(name)}</td></tr><tr><th>Received</th><td>${escapeHtml(receivedAt || new Date().toISOString())}</td></tr><tr><th>Assigned to</th><td>Unassigned</td></tr><tr><th>Priority</th><td>Normal</td></tr></tbody></table><p>Track status by moving this page between the Open, In Progress, and Resolved chapters. Edit the assignment and priority above or add page tags. Use comments for internal discussion.</p><h2>Affected assets</h2>${assets.length ? `<ul>${assets.map(a => `<li><a href="${escapeHtml(this.pageUrl(a.id))}">${escapeHtml(a.ref)}</a></li>`).join('')}</ul>` : '<p>No asset was identified. Add an Asset ID to the request when known.</p>'}<h2>Issue reported by email</h2><pre>${escapeHtml(text)}</pre><h2>Work log and resolution</h2><p>Record investigation, actions taken, and the resolution here.</p>`,
+      html: `<h1>${escapeHtml(subject || '(No subject)')}</h1><table><tbody><tr><th>Ticket</th><td>${escapeHtml(key)}</td></tr><tr><th>Requester</th><td>${escapeHtml(name)}</td></tr><tr><th>Received</th><td>${escapeHtml(receivedAt || new Date().toISOString())}</td></tr></tbody></table><p>Manage this ticket in the AssetDesk dashboard. Status, technician assignment, priority, and category are mirrored in this page's tags. Internal notes and resolution history are available in AssetDesk.</p><h2>Affected assets</h2>${assets.length ? `<ul>${assets.map(a => `<li><a href="${escapeHtml(this.pageUrl(a.id))}">${escapeHtml(a.ref)}</a></li>`).join('')}</ul>` : '<p>No asset was identified. Add an Asset ID to the request when known.</p>'}<h2>Issue reported</h2><pre>${escapeHtml(text)}</pre><h2>Technical documentation</h2><p>Add supporting documentation here. Use AssetDesk for technician notes, assignment, and resolution.</p>`,
       tags: [{ name: 'Ticket ID', value: key }, { name: 'Requester', value: email.slice(0, 255) }, { name: 'Priority', value: 'Normal' }, ...assets.map(a => ({ name: 'Affected asset', value: a.ref }))],
     });
   }
@@ -191,5 +191,34 @@ export class BookStackClient {
     const appended = `<h2 id="${marker}">Email update</h2><p><strong>From:</strong> ${escapeHtml(requester)}<br><strong>Received:</strong> ${escapeHtml(receivedAt || new Date().toISOString())}</p>${assetLinks}<pre>${escapeHtml(text)}</pre>`;
     const content = current.editor === 'markdown' && current.markdown ? { markdown: `${current.markdown}\n\n${appended}` } : { html: `${html}\n${appended}` };
     return this.updatePage(current.id, { ...content, changelog: 'Appended email reply' });
+  }
+
+  async syncTicketMetadata(ticket) {
+    const current = await this.getPage(ticket.page_id);
+    const managedNames = ['desk status', 'assigned technician', 'priority', 'category'];
+    const tags = [
+      ...(current.tags || []).filter(tag => !managedNames.includes(String(tag.name).trim().toLowerCase())),
+      { name: 'Desk status', value: String(ticket.status).replaceAll('_', ' ') },
+      { name: 'Assigned technician', value: ticket.assignee?.name || 'Unassigned' },
+      { name: 'Priority', value: ticket.priority },
+      { name: 'Category', value: ticket.category },
+    ];
+    const canonical = values => JSON.stringify(values.map(tag => [tag.name, tag.value]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));
+    if (canonical(current.tags || []) === canonical(tags)) return current;
+    return this.updatePage(ticket.page_id, { tags, changelog: 'Synced AssetDesk ticket properties' });
+  }
+
+  async linkAssetToTicket(ticket, asset) {
+    const current = await this.getPage(ticket.id);
+    const html = current.raw_html ?? current.html ?? '';
+    const url = this.pageUrl(asset.id);
+    if (html.includes(`href="${escapeHtml(url)}"`) || html.includes(`href='${escapeHtml(url)}'`)) return current;
+    const appended = `<p><strong>Linked asset:</strong> <a href="${escapeHtml(url)}">${escapeHtml(asset.ref)}</a></p>`;
+    const content = current.editor === 'markdown' && current.markdown ? { markdown: `${current.markdown}\n\n${appended}` } : { html: `${html}\n${appended}` };
+    const tags = [...(current.tags || [])];
+    if (!tags.some(tag => normalized(tag.name) === 'AFFECTED ASSET' && normalized(tag.value) === normalized(asset.ref))) {
+      tags.push({ name: 'Affected asset', value: asset.ref });
+    }
+    return this.updatePage(current.id, { ...content, tags, changelog: `Linked asset ${asset.ref}`.slice(0, 180) });
   }
 }

@@ -16,6 +16,8 @@ const values = {
   BOOKSTACK_ADMIN_PASSWORD: randomBytes(24).toString('hex'),
   INBOUND_EMAIL_TOKEN: randomBytes(32).toString('hex'),
   ADMIN_TOKEN: randomBytes(32).toString('hex'),
+  DASHBOARD_ADMIN_EMAIL: 'admin@assetdesk.local',
+  DASHBOARD_ADMIN_PASSWORD: randomBytes(24).toString('hex'),
 };
 for (const [name, value] of Object.entries(values)) {
   const line = new RegExp(`^${name}=(.*)$`, 'm');
