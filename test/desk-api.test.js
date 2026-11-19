@@ -13,7 +13,7 @@ async function harness(t, { cookieSecure = false } = {}) {
   const desk = new DeskStore(store);
   const admin = await desk.ensureAdmin({ name: 'Alex Admin', email: 'admin@example.com', password });
   const technician = await desk.createTechnician({ name: 'Taylor Tech', email: 'tech@example.com', password, role: 'technician' });
-  const worker = { wakeCalls: 0, wake() { this.wakeCalls++; } };
+  const worker = { wakeCalls: 0, accept(message) { return store.accept(message); }, wake() { this.wakeCalls++; } };
   const config = { cookieSecure, bookstack: { publicUrl: 'https://wiki.example.com' } };
   const app = express();
   app.use('/api/desk', createDeskRouter({ desk, store, worker, config }));

@@ -64,7 +64,7 @@ export class BookStackClient {
 
   async list(path) {
     const entries = [];
-    const search = path.startsWith('/search?');
+    const search = path.startsWith('/search?') || path.startsWith('/search/');
     for (let offset = 0; ; offset += 100) {
       const delimiter = path.includes('?') ? '&' : '?';
       const result = await this.request(`${path}${delimiter}count=100&${search ? `page=${offset / 100 + 1}` : `offset=${offset}`}`);
@@ -81,6 +81,66 @@ export class BookStackClient {
   async getPage(id) { return this.withUrl(await this.request(`/pages/${Number(id)}`)); }
   async updatePage(id, fields) { return this.withUrl(await this.request(`/pages/${Number(id)}`, { method: 'PUT', body: fields })); }
   async createPage(fields) { return this.withUrl(await this.request('/pages', { method: 'POST', body: fields })); }
+
+  ensureKnowledgeBook({ bookId } = {}) {
+    const key = bookId ? Number(bookId) : 'default';
+    this.knowledgeBooks ||= new Map();
+    if (!this.knowledgeBooks.has(key)) {
+      const pending = (async () => {
+        if (bookId) return this.request(`/books/${Number(bookId)}`);
+        const books = await this.list('/books');
+        const matches = books.filter(book => book.name === 'Knowledge Base');
+        if (matches.length > 1) throw safeError('Multiple Knowledge Base books exist; configure BOOKSTACK_KNOWLEDGE_BOOK_ID to select one.');
+        return matches[0] || this.request('/books', { method: 'POST', body: {
+          name: 'Knowledge Base', description: 'Shared IT support procedures and solutions, available within AssetDesk.',
+        } });
+      })().catch(error => { this.knowledgeBooks.delete(key); throw error; });
+      this.knowledgeBooks.set(key, pending);
+    }
+    return this.knowledgeBooks.get(key);
+  }
+
+  /** Authenticated, bounded gallery image access without exposing wiki credentials. */
+  async readImage(path) {
+    if (typeof path !== 'string' || !path.startsWith('/uploads/images/') || path.length > 2048
+      || /[\\%?#\x00-\x1f]/.test(path) || path.split('/').some(part => part === '.' || part === '..')
+      || !/\.(?:png|jpe?g|gif|webp)$/i.test(path)) throw safeError('Invalid BookStack image path', 400);
+    const url = `${this.publicUrl}${path}`;
+    let response;
+    try {
+      response = await this.fetch(`${this.url}/api/image-gallery/url/data?url=${encodeURIComponent(url)}`, {
+        headers: { Authorization: this.authorization, Accept: 'image/png,image/jpeg,image/gif,image/webp' },
+        signal: AbortSignal.timeout(20000), redirect: 'error',
+      });
+    } catch { throw safeError('BookStack image connection failed.', 502); }
+    if (!response.ok) throw safeError(`BookStack image request failed (HTTP ${response.status}).`, response.status);
+    const contentType = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    if (!['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(contentType)) {
+      await response.body?.cancel();
+      throw safeError('BookStack returned an unsupported image type.', 415);
+    }
+    const maximum = 10 * 1024 * 1024;
+    const expectedLength = Number(response.headers.get('content-length'));
+    if (Number.isFinite(expectedLength) && expectedLength > maximum) {
+      await response.body?.cancel();
+      throw safeError('BookStack image exceeds 10 MiB.', 413);
+    }
+    const chunks = []; let size = 0;
+    try {
+      for await (const chunk of response.body) {
+        size += chunk.length;
+        if (size > maximum) { await response.body.cancel().catch(() => {}); throw safeError('BookStack image exceeds 10 MiB.', 413); }
+        chunks.push(Buffer.from(chunk));
+      }
+    } catch (error) { if (error.safeMessage) throw error; throw safeError('BookStack image could not be read.', 502); }
+    const data = Buffer.concat(chunks);
+    const signature = contentType === 'image/png' ? data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+      : contentType === 'image/jpeg' ? data[0] === 255 && data[1] === 216 && data[2] === 255
+        : contentType === 'image/gif' ? /^GIF8[79]a$/.test(data.subarray(0, 6).toString('ascii'))
+          : data.subarray(0, 4).toString('ascii') === 'RIFF' && data.subarray(8, 12).toString('ascii') === 'WEBP';
+    if (!signature) throw safeError('BookStack returned invalid image data.', 415);
+    return { data, contentType };
+  }
 
   ensureWorkspace() {
     if (!this.workspacePromise) this.workspacePromise = this.createWorkspace().catch(error => { this.workspacePromise = null; throw error; });

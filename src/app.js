@@ -34,14 +34,18 @@ export function createApp({ store, worker, bookstack, config, desk }) {
   app.get('/healthz', (_req, res) => res.json({ status: 'ok' }));
   app.get('/readyz', async (_req, res) => {
     try {
-      await bookstack.checkHealth();
+      store.db.prepare('SELECT 1').get();
       res.json({ status: 'ready' });
     } catch {
-      res.status(503).json({ status: 'unavailable', error: 'BookStack is unavailable or API permissions are incomplete.' });
+      res.status(503).json({ status: 'unavailable', error: 'The local ticket database is unavailable.' });
     }
   });
+  app.get('/api/bookstack/health', admin, async (_req, res) => {
+    try { await bookstack.checkHealth(); res.json({ status: 'ready' }); }
+    catch { res.status(503).json({ status: 'unavailable', error: 'BookStack is unavailable or API permissions are incomplete.' }); }
+  });
   function accepted(message, res) {
-    const receipt = store.accept(message);
+    const receipt = worker.accept(message);
     worker.wake();
     return res.status(receipt.duplicate ? 200 : 202).json({
       ...receipt, statusUrl: `/api/receipts/${receipt.id}`,

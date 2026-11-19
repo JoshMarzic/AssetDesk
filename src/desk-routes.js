@@ -1,6 +1,7 @@
 import express from 'express';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { parseRawEmail } from './email.js';
+import { createKnowledgeRouter } from './knowledge.js';
 
 const COOKIE = 'assetdesk_session';
 const SESSION_MS = 8 * 60 * 60 * 1000;
@@ -52,7 +53,7 @@ function onlyFields(body, allowed) {
 }
 
 /** Browser session API. The mail/API bearer credentials never enter the UI. */
-export function createDeskRouter({ desk, store, worker, config }) {
+export function createDeskRouter({ desk, store, worker, config, bookstack }) {
   const router = express.Router();
   const loginFailures = new Map();
   const cookieOptions = { httpOnly: true, sameSite: 'strict', secure: Boolean(config.cookieSecure), path: '/' };
@@ -117,6 +118,8 @@ export function createDeskRouter({ desk, store, worker, config }) {
 
   const adminOnly = (req, res, next) => req.deskSession.user.role === 'admin'
     ? next() : res.status(403).json({ error: 'Administrator access is required.' });
+
+  router.use('/knowledge', createKnowledgeRouter({ bookstack, desk, config }));
 
   router.get('/session', (req, res) => res.json(sessionBody(req.deskSession)));
   router.post('/logout', (req, res) => {
@@ -201,7 +204,7 @@ export function createDeskRouter({ desk, store, worker, config }) {
       priority: body.priority || 'normal', category: body.category || 'general',
       assignee_id: body.assignee_id || null, source: 'manual', actor: req.deskSession.user,
     };
-    const receipt = store.accept(message);
+    const receipt = worker.accept(message);
     worker.wake();
     res.status(202).json({ ...receipt, statusUrl: `/api/desk/receipts/${receipt.id}` });
   });

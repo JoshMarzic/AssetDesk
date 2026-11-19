@@ -106,6 +106,9 @@ export class DeskStore {
         CREATE INDEX IF NOT EXISTS notes_ticket ON ticket_notes(ticket_key,created_at);
         CREATE INDEX IF NOT EXISTS events_ticket ON ticket_events(ticket_key,created_at);
         CREATE INDEX IF NOT EXISTS assets_reference ON ticket_assets(ref,ticket_key);
+        CREATE INDEX IF NOT EXISTS tickets_requester ON tickets(requester COLLATE NOCASE,updated_at DESC);
+        CREATE INDEX IF NOT EXISTS tickets_missing_sla ON tickets(key)
+          WHERE updated_at IS NULL OR response_due_at IS NULL OR resolution_due_at IS NULL;
       `);
       for (const response of DEFAULT_RESPONSES) this.db.prepare('INSERT OR IGNORE INTO response_templates (id,title,body,updated_at,actor_name) VALUES (?,?,?,?,?)').run(response.id, response.title, response.body, now(), 'System');
       if (!columns.has('status')) {
@@ -126,7 +129,9 @@ export class DeskStore {
       this.db.exec('COMMIT');
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }
     // Legacy queue payloads retain the original message; populate existing tickets without replacing page content.
-    for (const row of this.db.prepare(`SELECT id,ticket_key,payload FROM messages WHERE state='done' AND ticket_key IS NOT NULL ORDER BY rowid`).all()) {
+    for (const row of this.db.prepare(`SELECT m.id,m.ticket_key,m.payload FROM messages m
+      LEFT JOIN desk_receipts d ON d.receipt_id=m.id
+      WHERE m.state='done' AND m.ticket_key IS NOT NULL AND d.receipt_id IS NULL ORDER BY m.rowid`).all()) {
       if (!this.db.prepare('SELECT 1 FROM tickets WHERE key=?').get(row.ticket_key)) continue;
       try {
         const message = JSON.parse(row.payload);
@@ -144,6 +149,9 @@ export class DeskStore {
     }
   }
   transaction(action) {
+    // All callers are synchronous; nested local-ingest operations share the same
+    // atomic commit instead of issuing multiple WAL fsyncs per accepted ticket.
+    if (this.db.isTransaction) return action();
     this.db.exec('BEGIN IMMEDIATE');
     try { const result = action(); this.db.exec('COMMIT'); return result; } catch (e) { this.db.exec('ROLLBACK'); throw e; }
   }
@@ -225,19 +233,26 @@ export class DeskStore {
     const ticket = this.decorate(this.db.prepare('SELECT * FROM tickets WHERE key=?').get(key));
     if (!ticket) return null;
     const sync = this.db.prepare('SELECT last_error FROM ticket_sync WHERE ticket_key=?').get(key);
-    return { ...ticket, sync: { pending: Boolean(sync), error: sync?.last_error ?? null },
+    const mirror = this.db.prepare(`SELECT state,last_error FROM messages WHERE ticket_key=? AND state!='done'
+      ORDER BY CASE state WHEN 'failed' THEN 0 WHEN 'processing' THEN 1 ELSE 2 END,rowid LIMIT 1`).get(key);
+    return { ...ticket, sync: { pending: Boolean(sync || mirror) || ticket.page_id <= 0,
+      state: mirror?.state || (sync || ticket.page_id <= 0 ? 'pending' : 'done'),
+      error: mirror?.last_error ?? sync?.last_error ?? null },
       notes: this.db.prepare('SELECT * FROM ticket_notes WHERE ticket_key=? ORDER BY created_at,rowid').all(key),
       events: this.db.prepare('SELECT * FROM ticket_events WHERE ticket_key=? ORDER BY created_at,rowid').all(key),
       assets: this.db.prepare('SELECT ref,page_id AS id,url FROM ticket_assets WHERE ticket_key=? ORDER BY ref').all(key),
       pending_asset_links: this.db.prepare('SELECT ref,attempts,last_error AS error,created_at,actor_name FROM manual_asset_links WHERE ticket_key=? ORDER BY created_at,ref').all(key),
-      related_tickets: this.db.prepare(`SELECT t.key,t.subject,t.status,t.resolution,t.requester FROM tickets t
-        WHERE t.key<>? AND (t.requester=? COLLATE NOCASE OR EXISTS (
-          SELECT 1 FROM ticket_assets mine JOIN ticket_assets theirs ON theirs.ref=mine.ref
-          WHERE mine.ticket_key=? AND theirs.ticket_key=t.key))
+      related_tickets: this.db.prepare(`WITH related_keys AS (
+          SELECT key FROM tickets WHERE requester=? COLLATE NOCASE AND key<>?
+          UNION
+          SELECT theirs.ticket_key FROM ticket_assets mine JOIN ticket_assets theirs ON theirs.ref=mine.ref
+            WHERE mine.ticket_key=? AND theirs.ticket_key<>?
+        ) SELECT t.key,t.subject,t.status,t.resolution,t.requester FROM tickets t
+        JOIN related_keys r ON r.key=t.key
         ORDER BY CASE WHEN EXISTS (SELECT 1 FROM ticket_assets mine JOIN ticket_assets theirs ON theirs.ref=mine.ref
           WHERE mine.ticket_key=? AND theirs.ticket_key=t.key) THEN 0 ELSE 1 END,
           CASE WHEN t.status IN ('resolved','closed') THEN 0 ELSE 1 END,t.updated_at DESC,t.key LIMIT 8`)
-        .all(key, ticket.requester, key, key) };
+        .all(ticket.requester, key, key, key, key) };
   }
   listTickets({ search = '', status, priority, assignee, category, view, sort = 'newest', limit = 100, offset = 0 } = {}) {
     this.initializeRows();
@@ -338,10 +353,10 @@ export class DeskStore {
       this.db.prepare('DELETE FROM ticket_asset_recovery WHERE ticket_key=? AND ref=?').run(key, ref);
     }
   }
-  captureEmail(key, message, { receiptId, isReply = false, source = 'email', reopen = true, migrate = false } = {}) {
+  captureEmail(key, message, { receiptId, isReply = false, source = 'email', reopen = true, migrate = false, includeDetails = true } = {}) {
     if (!receiptId) throw error('Receipt ID is required.');
     if (!this.db.prepare('SELECT 1 FROM tickets WHERE key=?').get(key)) throw error('Ticket not found.', 404);
-    if (this.db.prepare('SELECT 1 FROM desk_receipts WHERE receipt_id=?').get(receiptId)) return this.getTicket(key);
+    if (this.db.prepare('SELECT 1 FROM desk_receipts WHERE receipt_id=?').get(receiptId)) return includeDetails ? this.getTicket(key) : this.store.ticket(key);
     const body = text(message.text, 'Email body', 100000), name = String(message.from?.name || '').slice(0, 200);
     return this.transaction(() => {
       this.initializeRows();
@@ -381,7 +396,7 @@ export class DeskStore {
       }
       if (!migrate) this.db.prepare('UPDATE tickets SET updated_at=?,version=version+1 WHERE key=?').run(now(), key);
       this.queueSync(key);
-      return this.getTicket(key);
+      return includeDetails ? this.getTicket(key) : this.store.ticket(key);
     });
   }
   listAssets() {
@@ -420,7 +435,9 @@ export class DeskStore {
     return { queued: true, ref };
   }
   pendingAssetLinks(timestamp = Date.now()) {
-    return this.db.prepare('SELECT ticket_key AS key,ref,actor_id,actor_name FROM manual_asset_links WHERE next_attempt<=? ORDER BY created_at,rowid LIMIT 10').all(timestamp)
+    return this.db.prepare(`SELECT a.ticket_key AS key,a.ref,a.actor_id,a.actor_name FROM manual_asset_links a
+      JOIN tickets t ON t.key=a.ticket_key WHERE a.next_attempt<=? AND t.page_id>0
+      ORDER BY a.created_at,a.rowid LIMIT 10`).all(timestamp)
       .map(row => ({ key: row.key, ref: row.ref, actor: { id: row.actor_id, name: row.actor_name } }));
   }
   completeAssetLink(key, ref, asset) {
@@ -443,7 +460,10 @@ export class DeskStore {
       .run(attempts, Date.now() + Math.min(300000, 1000 * 2 ** Math.min(attempts, 10)), summary, key, ref);
   }
   pendingAssetRecovery(timestamp = Date.now()) {
-    return this.db.prepare('SELECT ticket_key AS key,ref FROM ticket_asset_recovery WHERE next_attempt<=? ORDER BY rowid LIMIT 10').all(timestamp);
+    return this.db.prepare(`SELECT r.ticket_key AS key,r.ref FROM ticket_asset_recovery r
+      JOIN tickets t ON t.key=r.ticket_key WHERE r.next_attempt<=? AND t.page_id>0
+      AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.ticket_key=r.ticket_key AND m.state!='done')
+      ORDER BY r.rowid LIMIT 10`).all(timestamp);
   }
   deferAssetRecovery(key, ref) {
     this.db.prepare('UPDATE ticket_asset_recovery SET next_attempt=? WHERE ticket_key=? AND ref=?').run(Date.now() + 300000, key, ref);
@@ -455,7 +475,8 @@ export class DeskStore {
       ON CONFLICT(ticket_key) DO UPDATE SET version=excluded.version,attempts=0,next_attempt=0,last_error=NULL,queued_at=excluded.queued_at`).run(key, ticket.version, now());
   }
   pendingSync(timestamp = Date.now()) {
-    return this.db.prepare('SELECT ticket_key,version FROM ticket_sync WHERE next_attempt<=? ORDER BY queued_at LIMIT 10').all(timestamp)
+    return this.db.prepare(`SELECT s.ticket_key,s.version FROM ticket_sync s JOIN tickets t ON t.key=s.ticket_key
+      WHERE s.next_attempt<=? AND t.page_id>0 ORDER BY s.queued_at LIMIT 10`).all(timestamp)
       .map(row => ({ ...this.getTicket(row.ticket_key), version: row.version }));
   }
   markSynced(key, version) {

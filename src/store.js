@@ -28,6 +28,7 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS messages_thread ON messages(message_id);
       CREATE INDEX IF NOT EXISTS messages_queue ON messages(state, next_attempt);
+      CREATE INDEX IF NOT EXISTS messages_ticket ON messages(ticket_key, state);
       UPDATE messages SET state='pending' WHERE state='processing';
     `);
   }
@@ -43,6 +44,20 @@ export class Store {
     return this.db.prepare(`SELECT id,state,ticket_key AS ticketKey,attempts,last_error AS error,
       created_at AS createdAt,updated_at AS updatedAt FROM messages WHERE id=?`).get(id);
   }
+  message(id) {
+    const row = this.db.prepare('SELECT * FROM messages WHERE id=?').get(id);
+    return row ? { ...row, message: JSON.parse(row.payload) } : null;
+  }
+  pendingLocalMessages(limit = 100, after = 0) {
+    return this.db.prepare(`SELECT rowid AS local_sequence,* FROM messages WHERE ticket_key IS NULL AND rowid>?
+      ORDER BY rowid LIMIT ?`).all(after, limit).map(row => {
+      try { return { ...row, message: JSON.parse(row.payload) }; }
+      catch { return { ...row, message: null }; }
+    });
+  }
+  bind(id, key) {
+    this.db.prepare('UPDATE messages SET ticket_key=? WHERE id=? AND (ticket_key IS NULL OR ticket_key=?)').run(key, id, key);
+  }
   next(now = Date.now()) {
     const row = this.db.prepare(`SELECT * FROM messages WHERE state='pending' AND next_attempt<=?
       ORDER BY rowid LIMIT 1`).get(now);
@@ -55,8 +70,9 @@ export class Store {
     const references = [...new Set([message.inReplyTo, ...(message.references ?? []).toReversed()].filter(Boolean))];
     for (const reference of references) {
       const ticket = this.db.prepare(`SELECT t.* FROM messages m JOIN tickets t ON t.key=m.ticket_key
-        WHERE m.message_id=? AND m.state='done' LIMIT 1`).get(reference);
-      if (ticket && (ticket.requester === message.from.address || supportEmails.includes(message.from.address))) return ticket;
+        WHERE m.message_id=? AND (t.requester=? OR ?=1) ORDER BY m.rowid LIMIT 1`)
+        .get(reference, message.from.address, supportEmails.includes(message.from.address) ? 1 : 0);
+      if (ticket) return ticket;
     }
     return null;
   }
@@ -66,6 +82,15 @@ export class Store {
       if (row && (row.sender === message.from.address || supportEmails.includes(message.from.address))) return true;
     }
     return false;
+  }
+  pendingReference(message, supportEmails = []) {
+    for (const reference of [message.inReplyTo, ...(message.references ?? []).toReversed()].filter(Boolean)) {
+      const row = this.db.prepare(`SELECT * FROM messages WHERE message_id=? AND ticket_key IS NULL
+        AND (sender=? OR ?=1) ORDER BY rowid LIMIT 1`)
+        .get(reference, message.from.address, supportEmails.includes(message.from.address) ? 1 : 0);
+      if (row) return { ...row, message: JSON.parse(row.payload) };
+    }
+    return null;
   }
   ticket(key) { return this.db.prepare('SELECT * FROM tickets WHERE key=?').get(key); }
   saveTicket({ key, requester, subject, page_id, page_url, created_at }) {

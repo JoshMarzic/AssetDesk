@@ -23,7 +23,10 @@ export function configFromEnv(env = process.env) {
   }
   const trustProxyHops = Number(env.TRUST_PROXY_HOPS ?? 0);
   if (!Number.isInteger(trustProxyHops) || trustProxyHops < 0 || trustProxyHops > 5) throw new Error('TRUST_PROXY_HOPS must be between 0 and 5.');
+  const knowledgeBookId = env.BOOKSTACK_KNOWLEDGE_BOOK_ID ? Number(env.BOOKSTACK_KNOWLEDGE_BOOK_ID) : null;
+  if (knowledgeBookId !== null && (!Number.isSafeInteger(knowledgeBookId) || knowledgeBookId < 1)) throw new Error('BOOKSTACK_KNOWLEDGE_BOOK_ID must be a positive integer.');
   return {
+    knowledgeBookId,
     trustProxyHops,
     dashboardAdminEmail: env.DASHBOARD_ADMIN_EMAIL || 'admin@assetdesk.local',
     dashboardAdminPassword: env.DASHBOARD_ADMIN_PASSWORD || null,

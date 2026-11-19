@@ -27,7 +27,7 @@ Desktop's Containers view should show database, BookStack, and AssetDesk under t
 
 On the computer running Docker, open the **dashboard at `http://localhost:3000`**. In private `.env`, find `DASHBOARD_ADMIN_EMAIL` (initially `admin@assetdesk.local`) and generated `DASHBOARD_ADMIN_PASSWORD`. Sign in and use Team to create technicians. These are separate from API tokens and BookStack users. Later restarts preserve accounts; editing bootstrap password variables does not reset existing accounts.
 
-**BookStack is at `http://localhost:6875`**, with separate development login `admin@admin.com` and `BOOKSTACK_ADMIN_PASSWORD` from `.env`. The development bootstrap replaces only the stock password; customized logins remain unchanged. Edit asset ownership/documentation in BookStack and manage ticket status/assignment in the dashboard.
+**Knowledge base and asset records open inside the dashboard**, using the same session. Technicians do not need another login or browser page for normal documentation work. BookStack's separate administration interface remains at `http://localhost:6875` when needed: its development login is `admin@admin.com` with `BOOKSTACK_ADMIN_PASSWORD` from `.env`. The bootstrap replaces only the stock password; customized logins remain unchanged.
 
 Verify the dashboard workflow and create labeled sample records against the real stack:
 
@@ -36,16 +36,21 @@ node --env-file=.env scripts/desk-smoke.mjs
 node --env-file=.env scripts/smoke.mjs
 ```
 
-The desk smoke checks login, technician creation, manual tickets, assignment, notes, resolution, metadata sync, and logout; it deactivates its temporary technician afterward. The original smoke checks raw-mail intake and asset linking. They print `PASS` on success and send no external email. Both create example records, so use a development instance. For browser automation, including saved responses, manual asset linking, and related tickets, run `npm run test:browser` with Playwright's Chromium or a compatible installed Chromium.
+The desk smoke checks login, technician creation, manual tickets, assignment, notes, resolution, metadata sync, and logout; it deactivates its temporary technician afterward. The original smoke checks raw-mail intake and asset linking. They print `PASS` on success and send no external email. Both create example records, so use a development instance. For browser automation, including saved responses, asset linking, fast local ticket creation, and embedded knowledge work, run `npm run test:browser` with Playwright's Chromium or a compatible installed Chromium.
 
 ## Try the service-desk workflow
 
 1. In Team, create a named technician and securely share their initial password. Invitations and password-reset emails are not sent automatically.
-2. Select New ticket, enter requester/issue details, choose priority/category, and assign the technician. Find it in the queue and their My Tickets view. A technician can also claim a ticket using Assign to me.
+2. Select New ticket, enter requester/issue details, choose priority/category, and assign the technician. The saved ticket opens without waiting for BookStack. Work it immediately in the queue or My Tickets while wiki pages and asset links synchronize in the background. A technician can also claim a ticket using Assign to me.
 3. Open it, move to In Progress, and add an internal work note. Try inserting a shared saved response; check that `{{requester}}`, `{{technician}}`, `{{ticket_id}}`, and `{{subject}}` expand for the current ticket. Copy a rendered response for your existing email client if needed. Explicitly mark first response after contacting the requester; these actions do not send email.
 4. Enter a resolution summary before selecting Resolved, then Close after confirmation. Check activity history and dashboard counts.
-5. Mention an asset ID in an issue, edit its linked BookStack owner/location, then create another request mentioning that ID. Expect the same asset and preserved ownership details. Also manually associate an asset from the ticket drawer: choose a known asset or enter an explicit ID. Its durable queue should update links on both the ticket and asset BookStack pages when the wiki is reachable.
+5. Mention an asset ID in an issue, open its embedded asset record to edit owner/location, then create another request mentioning that ID. Expect the same asset and preserved ownership details after synchronization. Also manually associate an asset from the ticket drawer: choose a known asset or enter an explicit ID. Its durable queue updates links on both the ticket and asset BookStack pages when the wiki is reachable.
 6. Open Related Tickets to find other requests sharing the asset or requester. As an administrator, create/edit a shared response template and archive one you no longer use. Technicians can use the shared library but cannot administer templates.
+7. Select Knowledge base, create an article, browse/search it, and edit it without signing into BookStack. Administrators can create chapters. Asset records are editable in this same reader; ticket documentation mirrors are read-only.
+
+Knowledge articles use a BookStack book named **Knowledge Base** by default. To reuse an existing book, set `BOOKSTACK_KNOWLEDGE_BOOK_ID` to its numeric ID in `.env` and recreate the AssetDesk container. The integration account needs access to that book. Search stays within the selected knowledge book; embedded asset/ticket records are limited to the books managed by AssetDesk. All dashboard staff share this managed-content access through the service account.
+
+Article HTML is sanitized server-side. Supported existing BookStack raster images are displayed through an authenticated AssetDesk proxy; external images, image uploads, and attachments are not supported by the embedded editor. Saving checks the article version to detect a newer edit, though BookStack's API cannot make the final check/write atomic with a simultaneous external wiki save.
 
 Response/resolution targets are elapsed wall-clock indicators documented in README.md. Waiting does not pause them, and reopening retains creation-time deadlines. There are no business-hour calendars or automatic escalations.
 
@@ -63,7 +68,7 @@ My LAPTOP-1042 will not start after an update.
 MAIL
 ```
 
-Refresh the dashboard after a few seconds. Expect one ticket linked to `LAPTOP-1042`, creating a missing asset. Redelivering the same Message-ID should not create a duplicate; use a new ID for a distinct issue. Requester replies with valid thread headers join and reopen resolved/closed tickets; subject text alone does not establish a thread.
+The ticket is available locally as soon as intake accepts it. Asset-page creation and links follow in the background; the ticket shows their synchronization state separately. Redelivering the same Message-ID should not create a duplicate; use a new ID for a distinct issue. Requester replies with valid thread headers join and reopen resolved/closed tickets, including when their wiki mirror is still pending; subject text alone does not establish a thread.
 
 A remote workspace's loopback ports are not your laptop's loopback ports. Run locally, use the platform's supported port forwarding, or deploy on your server. For your own SSH-accessible server configured with local URLs, a temporary tunnel is:
 
@@ -83,15 +88,15 @@ node scripts/setup.mjs
 docker compose up -d --build --wait assetdesk
 ```
 
-Setup adds dashboard credentials and preserves nonempty configuration. SQLite migrates in place without discarding accepted mail or ticket-page mappings. Old tickets without dashboard workflow fields start in Open for triage. Sign in on port 3000 and create named technicians.
+Setup fills missing settings and preserves nonempty configuration. SQLite migrates in place without discarding accepted mail, accounts, passwords, or ticket-page mappings. Old tickets without dashboard workflow fields start in Open for triage. Sign in on port 3000 with your existing account; this update needs no new password.
 
-Keep the `intake` volume. Do not rerun BookStack bootstrap as a routine upgrade; refresh a genuinely expiring API token through the appropriate development or production administration path. Dashboard status/assignment becomes authoritative. Moving wiki pages does not update the dashboard; managed metadata syncs one way to BookStack tags, with retries after outages.
+Keep the `intake` volume. Do not rerun BookStack bootstrap as a routine upgrade; refresh a genuinely expiring API token through the appropriate development or production administration path. Dashboard status/assignment remains authoritative. Moving wiki pages does not update the dashboard; managed metadata syncs one way to BookStack tags, with retries after outages. Tickets remain editable while BookStack is unavailable; knowledge reading/editing still needs the wiki connection.
 
 ## Deploy on a Linux server with HTTPS
 
 This example uses a Linux server with Docker, Compose v2, Node.js 24/npm, and **Caddy installed on the host**. It is a deployment recipe, not automatic server provisioning.
 
-1. Point two DNS names at the server: `helpdesk.example.com` for the dashboard and `wiki.example.com` for BookStack. Allow inbound TCP 80/443. Keep the database and application ports private. Replace example domains throughout.
+1. Point `helpdesk.example.com` at the server for the dashboard. This recipe also uses `wiki.example.com` for optional native BookStack administration; technicians do not need that site for normal work. Allow inbound TCP 80/443 and keep the database/application ports private. Replace example domains throughout.
 2. Clone/copy source to `/opt/assetdesk` and prepare private configuration:
 
    ```sh
@@ -143,7 +148,7 @@ This example uses a Linux server with Docker, Compose v2, Node.js 24/npm, and **
    BOOKSTACK_TOKEN_SECRET=<token secret from BookStack>
    ```
 
-   Restrict accessible content after provisioning. Manage human wiki permissions separately from dashboard technicians.
+   Restrict accessible content after provisioning, including the selected Knowledge Base book and the AssetDesk Assets/Tickets books. Dashboard users access that managed content through the integration account, without separate wiki sessions. Manage direct BookStack administration accounts separately.
 
 8. Start AssetDesk and check readiness:
 
@@ -153,7 +158,7 @@ This example uses a Linux server with Docker, Compose v2, Node.js 24/npm, and **
    curl --fail http://127.0.0.1:3000/readyz
    ```
 
-   Expect `{"status":"ready"}`. Sign in at the HTTPS dashboard with the initial dashboard email/password, create technician accounts, and test a staging request. Do not use bearer tokens as browser credentials.
+   Expect `{"status":"ready"}` for local service-desk/SQLite readiness. BookStack can be temporarily unavailable without preventing ticket work. Its separate bearer-authenticated health endpoint is `/api/bookstack/health`; knowledge reading/editing and wiki synchronization require that connection. Sign in at the HTTPS dashboard with the initial dashboard email/password, create technician accounts, and test a staging request. Do not use bearer tokens as browser credentials.
 
 For an intentional integration smoke run against the HTTPS wiki, use `SMOKE_BOOKSTACK_URL=https://wiki.example.com node --env-file=.env scripts/smoke.mjs`; it creates sample data. `npm test` runs automated suites without a public deployment.
 
@@ -197,5 +202,7 @@ curl --fail http://127.0.0.1:3000/readyz
 Keep private `.env` and back up/restore all three volumes together: `database` (MariaDB), `bookstack` (wiki files), and `intake` (SQLite queue, workflow, accounts, notes, sessions, history, shared response templates, and queued manual asset associations). Use database-aware MariaDB backups and consistent SQLite backups; a running SQLite database can have WAL/SHM files. Use one AssetDesk instance per SQLite database.
 
 `docker compose down` retains data. **`docker compose down -v` deletes it.** Refresh expiring BookStack API tokens through native production administration. Keep credentials out of Git and logs.
+
+The companion no longer waits for the wiki container's health before it can start. A pending/failed BookStack mirror is a synchronization issue, not a missing local ticket. Administrators can inspect `/api/queue` and `/api/receipts/:id` using `ADMIN_TOKEN`, correct the connection/permission problem, and retry a failed receipt with `POST /api/receipts/:id/retry`. Do not delete the queue to clear a wiki outage.
 
 Internal notes and first-response flags do not send email. Outbound replies/acknowledgements, attachments, mailbox hosting, business-hours calendars, and automatic escalation are not supplied by the bundled stack.

@@ -146,13 +146,17 @@ test('manual tickets support Unicode and preserve text without header injection'
   assert.deepEqual(ticket.assets.map(asset => asset.ref), ['ASSET-44']);
 });
 
-test('readiness reflects BookStack failure without exposing upstream credentials or details', async t => {
+test('local readiness stays available during a wiki outage and separate integration health hides private failures', async t => {
   const { bookstack, request } = await harness(t);
   assert.equal((await request('/readyz', { token: null })).status, 200);
   assert.equal(bookstack.workspaceCalls, 0, 'readiness does not create books, shelves, or chapters');
   bookstack.checkHealth = async () => { throw new Error('https://secret-token@internal.example/private'); };
   const response = await request('/readyz', { token: null });
-  assert.equal(response.status, 503);
+  assert.equal(response.status, 200);
+  assert.equal((await request('/api/bookstack/health', { token: null })).status, 401);
+  const integration = await request('/api/bookstack/health');
+  assert.equal(integration.status, 503);
+  assert.doesNotMatch(JSON.stringify(integration.body), /secret-token|internal\.example/);
   assert.doesNotMatch(JSON.stringify(response.body), /secret-token|internal\.example/);
 });
 

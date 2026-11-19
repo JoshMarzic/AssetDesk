@@ -12,11 +12,15 @@ const PASSWORD = 'Browser-test-password-2026';
 const ADMIN_EMAIL = 'admin@example.test';
 const TARGET_KEY = 'HD-BROWSER002';
 
-function fakeBookStack() {
+function fakeBookStack({ blockWrites = false } = {}) {
   let sequence = 100;
+  let release;
+  const writeGate = blockWrites ? new Promise(resolve => { release = resolve; }) : Promise.resolve();
   const assets = new Map([['MONITOR-55', {id:55,ref:'MONITOR-55',url:'https://wiki.example.test/link/55'}]]), tickets = new Map();
   return {
-    async ensureWorkspace() { return { assetBook: { id: 1 }, openChapter: { id: 2 } }; },
+    writeBlocked: blockWrites,
+    release() { this.writeBlocked = false; release?.(); },
+    async ensureWorkspace() { await writeGate; return { assetBook: { id: 1 }, ticketBook: { id: 3 }, openChapter: { id: 2 } }; },
     async checkHealth() {},
     async findAsset(ref) { return assets.get(ref) || null; },
     async ensureAsset(ref) {
@@ -34,7 +38,7 @@ function fakeBookStack() {
   };
 }
 
-async function harness(t, { mobile = false } = {}) {
+async function harness(t, { mobile = false, blockWrites = false } = {}) {
   const store = new Store(':memory:');
   const desk = new DeskStore(store);
   const admin = await desk.ensureAdmin({ name: 'Jordan Blake', email: ADMIN_EMAIL, password: PASSWORD });
@@ -53,7 +57,7 @@ async function harness(t, { mobile = false } = {}) {
     store.db.prepare('UPDATE tickets SET created_at=?,updated_at=?,response_due_at=NULL,resolution_due_at=NULL WHERE key=?').run(created, created, fixture.key);
   }
   desk.addAssets(TARGET_KEY, [{ ref: 'LAPTOP-1042', id: 42, url: 'https://wiki.example.test/link/42' }]);
-  const bookstack = fakeBookStack();
+  const bookstack = fakeBookStack({ blockWrites });
   const worker = new Worker({ store, desk, bookstack, logger: { error() {} } });
   const config = { inboundToken: 'browser-intake-test-token-1234567890', adminToken: 'browser-admin-test-token-12345678901', bookstack: { url: 'https://wiki.example.test', publicUrl: 'https://wiki.example.test' }, cookieSecure: false };
   const server = createApp({ store, desk, worker, bookstack, config }).listen(0, '127.0.0.1');
@@ -67,12 +71,13 @@ async function harness(t, { mobile = false } = {}) {
   page.on('pageerror', error => pageErrors.push(error.message));
   t.after(async () => {
     await browser.close();
+    bookstack.release();
     await worker.stop();
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
     store.close();
   });
-  return { page, desk, store, worker, admin, avery, casey, responseTemplate, pageErrors, url: `http://127.0.0.1:${server.address().port}` };
+  return { page, desk, store, worker, bookstack, admin, avery, casey, responseTemplate, pageErrors, url: `http://127.0.0.1:${server.address().port}` };
 }
 
 async function signIn(page, url) {
@@ -194,7 +199,41 @@ test('dashboard supports technician assignment, triage, notes, resolution and te
   assert.equal(created.priority, 'high');
   assert.equal(created.category, 'access');
   assert.equal(created.source, 'manual');
-  assert.ok(h.desk.getTicket(created.key).assets.some(asset => asset.ref === 'ASSET-321'));
+  await eventually(() => h.desk.getTicket(created.key).assets.some(asset => asset.ref === 'ASSET-321'), 'Background asset linking must finish after the ticket is locally available.');
+  assert.deepEqual(h.pageErrors, []);
+});
+
+test('a new ticket opens and remains editable while the remote wiki is blocked', { timeout: 60000 }, async t => {
+  const h = await harness(t, { blockWrites: true });
+  await signIn(h.page, h.url);
+  await h.page.getByRole('button', { name: 'New ticket', exact: true }).first().click();
+  const modal = h.page.getByRole('dialog', { name: 'Workspace form' });
+  await modal.getByLabel('Subject', { exact: true }).fill('Ticket available before BookStack completes');
+  await modal.getByLabel('Requester email', { exact: true }).fill('waiting@example.test');
+  await modal.getByLabel('Description', { exact: true }).fill('LAPTOP-505 needs attention while documentation sync is unavailable.');
+  const started = performance.now();
+  await modal.getByRole('button', { name: 'Create ticket', exact: true }).click();
+  const drawer = h.page.getByRole('dialog', { name: 'Ticket details' });
+  await drawer.getByRole('heading', { name: 'Ticket available before BookStack completes', exact: true }).waitFor({ timeout: 5000 });
+  assert.ok(performance.now() - started < 5000, 'Ticket creation should not wait for the blocked remote wiki.');
+  assert.equal(h.bookstack.writeBlocked, true);
+  const created = h.desk.listTickets({ search: 'Ticket available before BookStack completes' }).tickets[0];
+  assert.ok(created?.key, 'The new ticket must be durable before background synchronization.');
+  assert.equal(created.page_id, 0);
+  await drawer.getByLabel('Assigned technician', { exact: true }).selectOption(h.avery.id);
+  await drawer.getByLabel('Priority', { exact: true }).selectOption('urgent');
+  await drawer.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await eventually(() => h.desk.getTicket(created.key).assignee_id === h.avery.id && h.desk.getTicket(created.key).priority === 'urgent', 'Triage must persist while the remote wiki is unavailable.');
+  await h.page.waitForLoadState('networkidle');
+  await drawer.getByLabel('Internal note', { exact: true }).fill('Investigating immediately; documentation will synchronize in the background.');
+  await drawer.getByRole('button', { name: 'Add note', exact: true }).click();
+  await eventually(() => h.desk.getTicket(created.key).notes.some(note => note.body.includes('Investigating immediately')), 'Technicians must be able to work the ticket while synchronization is pending.');
+  await h.page.screenshot({ path: '/tmp/assetdesk-ticket-pending.png', fullPage: true });
+  h.bookstack.release();
+  await eventually(() => h.desk.getTicket(created.key).page_id > 0 && h.desk.getTicket(created.key).assets.some(asset => asset.ref === 'LAPTOP-505'), 'BookStack and asset links must eventually finish after the remote wiki recovers.');
+  assert.equal(h.desk.getTicket(created.key).priority, 'urgent');
+  assert.equal(h.desk.getTicket(created.key).assignee_id, h.avery.id);
+  assert.ok(h.desk.getTicket(created.key).notes.some(note => note.body.includes('Investigating immediately')));
   assert.deepEqual(h.pageErrors, []);
 });
 

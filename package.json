@@ -1,6 +1,6 @@
 {
   "name": "assetdesk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "A technician service desk with email intake and BookStack asset records",
@@ -11,12 +11,13 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "test": "node --test test/*.test.js",
-    "test:browser": "node --test test/browser.spec.mjs",
+    "test:browser": "node --test test/*browser.spec.mjs",
     "check": "node --check src/server.js"
   },
   "dependencies": {
     "express": "^5.2.1",
-    "mailparser": "^3.9.12"
+    "mailparser": "^3.9.12",
+    "sanitize-html": "^2.18.2"
   },
   "devDependencies": {
     "playwright": "^1.65.1"
