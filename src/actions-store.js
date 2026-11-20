@@ -16,6 +16,7 @@ export const ACTION_TYPES = Object.freeze([
   { type: 'approval', name: 'Approval', label: 'Approval', description: 'Email a request and wait for an explicit approval or rejection.', fields: ['to', 'subject', 'body', 'expires_hours'] },
   { type: 'email', name: 'Send email', label: 'Send email', description: 'Send a notification to one recipient, then continue.', fields: ['to', 'subject', 'body'] },
   { type: 'api', name: 'API call', label: 'API call', description: 'Call an administrator-configured connection.', fields: ['connection', 'method', 'path', 'body'] },
+  { type: 'power_automate', name: 'Power Automate', label: 'Power Automate', description: 'POST JSON to a configured HTTP-triggered flow and continue when the trigger accepts it.', fields: ['connection', 'body'] },
   { type: 'task', name: 'Manual task', label: 'Manual task', description: 'Wait for an assigned technician to complete a task.', fields: ['instructions', 'assignee_email'] },
   { type: 'delay', name: 'Wait', label: 'Wait', description: 'Pause for a duration and resume automatically.', fields: ['minutes'] },
 ]);
@@ -102,13 +103,18 @@ export function validateActionDefinition(input) {
     } else if (step.type === 'task') {
       clean = { instructions: text(config.instructions, 'Task instructions', 20000, false, true), assignee_email: text(config.assignee_email ?? '', 'Assigned technician', 500, true) };
       if (clean.assignee_email && literal(clean.assignee_email)) email(clean.assignee_email, 'Assigned technician');
-    } else if (step.type === 'api') {
+    } else if (step.type === 'api' || step.type === 'power_automate') {
       const connection = text(config.connection ?? '', 'API connection', 100, true);
       if (connection && !/^[A-Za-z0-9_-]{1,100}$/.test(connection)) throw fail('Choose a configured API connection.');
-      if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(config.method)) throw fail('Choose a supported API method.');
-      clean = { connection, method: config.method, path: text(config.path, 'API path', 3000), body: text(config.body ?? '', 'API JSON body', 30000, true, true) };
-      safePath(clean.path.replace(TOKEN, 'variable')); jsonTemplate(clean.body);
-      if (clean.method === 'GET' && clean.body) throw fail('GET API steps cannot have a request body.');
+      const body = text(config.body ?? '', 'API JSON body', 30000, true, true) || (step.type === 'power_automate' ? '{}' : '');
+      jsonTemplate(body);
+      if (step.type === 'power_automate') clean = { connection, body };
+      else {
+        if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(config.method)) throw fail('Choose a supported API method.');
+        clean = { connection, method: config.method, path: text(config.path, 'API path', 3000), body };
+        safePath(clean.path.replace(TOKEN, 'variable'));
+        if (clean.method === 'GET' && clean.body) throw fail('GET API steps cannot have a request body.');
+      }
     } else {
       const minutes = typeof config.minutes === 'number' ? String(config.minutes) : text(config.minutes, 'Wait duration', 100);
       if (literal(minutes) && (!Number.isFinite(Number(minutes)) || Number(minutes) <= 0 || Number(minutes) > 43200)) throw fail('Wait duration must be greater than zero and at most 43,200 minutes.');
@@ -164,8 +170,8 @@ export function renderActionSteps(definition, values, user, desk) {
       const assigned = email(assignee || user.email, 'Assigned technician');
       if (!desk.listTechnicians().some(person => person.active && person.email.toLowerCase() === assigned)) throw fail('Manual tasks must be assigned to an active AssetDesk technician.');
       config = { instructions: text(renderString(source.instructions, values), 'Task instructions', 30000, false, true), assignee_email: assigned };
-    } else if (step.type === 'api') {
-      config = { connection: source.connection, method: source.method, path: safePath(renderString(source.path, values, true)), body: source.body ? renderJson(jsonTemplate(source.body), values) : null };
+    } else if (step.type === 'api' || step.type === 'power_automate') {
+      config = { connection: source.connection, ...(step.type === 'api' ? { method: source.method, path: safePath(renderString(source.path, values, true)) } : {}), body: source.body ? renderJson(jsonTemplate(source.body), values) : null };
       if (config.body !== null && Buffer.byteLength(JSON.stringify(config.body)) > 1024 * 1024) throw fail('The rendered API request body must be at most one megabyte.');
     } else {
       const minutes = Number(renderString(source.minutes, values));
@@ -425,7 +431,7 @@ export class ActionsStore {
     this.transaction(() => {
       for (const run of this.db.prepare("SELECT * FROM action_runs WHERE status='running'").all()) {
         const step = this.stepRow(run.id, run.current_step); if (!step) continue;
-        if (['approval', 'email', 'api'].includes(step.type)) this.failStep(run.id, step.step_index, step.claim_token, 'needs_attention', 'The previous delivery or API attempt may have reached its destination. Check the destination before explicitly retrying.');
+        if (['approval', 'email', 'api', 'power_automate'].includes(step.type)) this.failStep(run.id, step.step_index, step.claim_token, 'needs_attention', 'The previous delivery or API attempt may have reached its destination. Check the destination before explicitly retrying.');
         else {
           this.db.prepare("UPDATE action_run_steps SET status='pending',claim_token=NULL WHERE run_id=? AND step_index=?").run(run.id, run.current_step);
           this.db.prepare("UPDATE action_runs SET status='queued',version=version+1,updated_at=? WHERE id=?").run(now(), run.id);

@@ -57,6 +57,9 @@ export class ActionsRunner {
       } else if (step.type === 'api') {
         const result = await this.transports.callApi(config, user);
         this.actions.advanceStep(id, index, claim, { status: result.status });
+      } else if (step.type === 'power_automate') {
+        const result = await this.transports.triggerFlow(config, user);
+        this.actions.advanceStep(id, index, claim, { status: result.status, trigger_accepted: true });
       } else throw Object.assign(new Error('Unsupported action step.'), { blocked: true, safeMessage: 'This action step type is not supported.' });
     } catch (error) {
       const state = error.uncertain ? 'needs_attention' : error.blocked ? 'blocked' : 'failed';

@@ -26,6 +26,28 @@ const approval = { id: 'approval', type: 'approval', name: 'Approve access', con
 const notification = { id: 'email', type: 'email', name: 'Notify requester', config: { to: 'person@example.test', subject: 'Access approved', body: 'Your request has been approved.' } };
 const definition = steps => ({ name: 'Access workflow', description: '', variables: [], steps });
 const token = mail => mail.text.match(/\/approve\/([a-f0-9]{80})/)[1];
+const flow = { id: 'flow', type: 'power_automate', name: 'Trigger provisioning flow', config: { connection: 'provision_flow', body: '{"approved":true}' } };
+
+test('Power Automate steps record trigger acceptance and continue once, while uncertain results require an explicit retry', async t => {
+  const triggered = [];
+  const h = await fixture(t, { async triggerFlow(config, user) { triggered.push({ config, user }); return { status: 202 }; } });
+  const run = h.actions.createRun({ definition: definition([flow, { id: 'check', type: 'task', config: { instructions: 'Check the flow run in Power Automate.', assignee_email: h.assignee.email } }]), values: {} }, h.owner);
+  await h.runner.wake();
+  let current = h.actions.getRun(run.id, h.owner);
+  assert.equal(current.status, 'waiting_task'); assert.equal(triggered.length, 1);
+  assert.deepEqual(triggered[0].config, { connection: 'provision_flow', body: { approved: true } });
+  assert.equal(triggered[0].user.id, h.owner.id);
+  assert.deepEqual(current.steps[0].output, { status: 202, trigger_accepted: true });
+  await h.runner.wake(); assert.equal(triggered.length, 1, 'Accepted triggers must not be repeated while waiting on the next step.');
+  h.actions.completeTask(run.id, {}, h.assignee); await h.runner.wake(); assert.equal(h.actions.getRun(run.id, h.owner).status, 'completed');
+  let attempts = 0;
+  h.transports.triggerFlow = async () => { attempts++; throw Object.assign(new Error('private trigger signature'), { safeMessage: 'The flow result could not be confirmed. Check before retrying.', uncertain: true }); };
+  const uncertain = h.actions.createRun({ definition: definition([flow]), values: {} }, h.owner); await h.runner.wake();
+  current = h.actions.getRun(uncertain.id, h.owner); assert.equal(current.status, 'needs_attention'); assert.doesNotMatch(JSON.stringify(current), /private trigger signature/);
+  await h.runner.wake(); assert.equal(attempts, 1);
+  h.transports.triggerFlow = async () => { attempts++; throw Object.assign(new Error('connection unavailable'), { safeMessage: 'The flow is unavailable to this account.', blocked: true }); };
+  h.actions.retryRun(uncertain.id, h.owner); await h.runner.wake(); assert.equal(h.actions.getRun(uncertain.id, h.owner).status, 'blocked'); assert.equal(attempts, 2);
+});
 
 test('ordered workflows pause for delivered approval and assigned tasks, then resume through email, API and durable delay', async t => {
   const h = await fixture(t);
@@ -106,12 +128,14 @@ test('restart preserves waits and marks interrupted external attempts for attent
   const directory = mkdtempSync(join(tmpdir(), 'action-restart-')), filename = join(directory, 'desk.sqlite');
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const first = new Store(filename), desk = new DeskStore(first), user = await desk.ensureAdmin({ name: 'Admin', email: 'restart@example.test', password: 'Restart-action-password-2026' }), actions = new ActionsStore(desk);
-  const run = actions.createRun({ definition: definition([notification]), values: {} }, user); actions.claimNext(); first.close();
-  const reopened = new Store(filename), restoredDesk = new DeskStore(reopened), restored = new ActionsStore(restoredDesk); let sends = 0;
-  const runner = new ActionsRunner({ actions: restored, transports: { capabilities: () => ({ email: { configured: true } }), async sendEmail() { sends++; return { messageId: 'unexpected' }; } }, logger: { error() {} } });
+  const run = actions.createRun({ definition: definition([notification]), values: {} }, user); actions.claimNext();
+  const flowRun = actions.createRun({ definition: definition([flow]), values: {} }, user); actions.claimNext(); first.close();
+  const reopened = new Store(filename), restoredDesk = new DeskStore(reopened), restored = new ActionsStore(restoredDesk); let sends = 0, triggers = 0;
+  const runner = new ActionsRunner({ actions: restored, transports: { capabilities: () => ({ email: { configured: true } }), async sendEmail() { sends++; return { messageId: 'unexpected' }; }, async triggerFlow() { triggers++; return { status: 202 }; } }, logger: { error() {} } });
   try {
     await runner.start(); const result = restored.getRun(run.id, restoredDesk.user(user.id));
     assert.equal(result.status, 'needs_attention'); assert.equal(sends, 0); assert.match(result.error, /before explicitly retrying/);
+    assert.equal(restored.getRun(flowRun.id, restoredDesk.user(user.id)).status, 'needs_attention'); assert.equal(triggers, 0, 'A flow may have started before the restart and must not be replayed automatically.');
   } finally { await runner.stop(); reopened.close(); }
 });
 

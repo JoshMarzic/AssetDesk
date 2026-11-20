@@ -72,11 +72,33 @@ test('Actions endpoints require a session and mutation CSRF, and metadata omits 
   const session = await h.login(h.tech);
   const types = await h.request('/actions/types', { session }); assert.equal(types.status, 200);
   assert.equal(types.headers.get('cache-control'), 'no-store');
-  for (const kind of ['approval', 'email', 'api', 'task', 'delay']) assert.ok(types.body.types.some(item => (item.type || item.id) === kind));
+  for (const kind of ['approval', 'email', 'api', 'power_automate', 'task', 'delay']) assert.ok(types.body.types.some(item => (item.type || item.id) === kind));
   assert.deepEqual(types.body.capabilities.connections, []);
   assert.doesNotMatch(JSON.stringify(types.body), /Transport secrets|privateSecret|password|Authorization/);
   assert.equal((await h.request('/actions/templates', { method: 'POST', session, csrf: false, body: taskDefinition() })).status, 403);
   assert.equal((await h.request('/actions/runs', { method: 'POST', session, csrf: false, body: { definition: taskDefinition(), values: { person_name: 'Alex' } } })).status, 403);
+});
+
+test('a template preserves its title, description, and executable flow implementation through the API', async t => {
+  const h = await harness(t), session = await h.login();
+  h.transports.triggerFlow = async (input, user) => { h.calls.push({ input: structuredClone(input), user: user.id }); return { status: 202 }; };
+  const definition = {
+    name: 'Employee onboarding', description: 'Send the employee and equipment request to the standard onboarding flow.',
+    variables: [{ key: 'person_name', label: 'Employee name', type: 'text', required: true }, { key: 'count', label: 'Equipment count', type: 'number', required: true }],
+    steps: [{ id: 'onboard', type: 'power_automate', name: 'Start onboarding', config: { connection: 'onboarding', body: '{"employee":"{{person_name}}","equipment_count":"{{count}}"}' } }],
+  };
+  const created = await h.request('/actions/templates', { method: 'POST', session, body: definition });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const saved = await h.request('/actions/templates/' + created.body.id, { session });
+  assert.equal(saved.body.name, definition.name); assert.equal(saved.body.description, definition.description);
+  assert.deepEqual(saved.body.steps, definition.steps);
+  const started = await h.request('/actions/runs', { method: 'POST', session, body: { template_id: saved.body.id, template_version: saved.body.version, values: { person_name: 'Renée "Alex"', count: '2' } } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const run = await h.waitFor(started.body.id, 'completed');
+  assert.deepEqual(h.calls, [{ input: { connection: 'onboarding', body: { employee: 'Renée "Alex"', equipment_count: 2 } }, user: h.admin.id }]);
+  assert.deepEqual(run.steps[0].output, { status: 202, trigger_accepted: true });
+  assert.deepEqual(run.definition.steps, definition.steps, 'The saved implementation keeps the variable placeholders.');
+  assert.equal(run.description, definition.description);
 });
 
 test('Template ownership and optimistic versions protect standardized workflows, while run snapshots are independent', async t => {

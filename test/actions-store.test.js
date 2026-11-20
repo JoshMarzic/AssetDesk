@@ -90,3 +90,21 @@ test('action creation validates ticket links and assignees, while cancellation g
   assert.equal(detailed.steps[0].name, 'Approve request for Alex');
   assert.ok(detailed.steps[0].config.body.length > 1000);
 });
+
+test('Power Automate implementations render safe typed JSON and retain only connection identifiers in immutable snapshots', async t => {
+  const h = await fixture(t);
+  const definition = { name: 'Provision through a flow', description: 'Trigger the approved provisioning flow.', variables: [
+    { key: 'person', label: 'Employee name', type: 'text', required: true },
+    { key: 'count', label: 'Device count', type: 'number', required: true },
+  ], steps: [{ id: 'provision', type: 'power_automate', name: 'Provision {{person}}', config: { connection: 'provision_flow', body: '{"person":"{{person}}","devices":"{{count}}"}' } }] };
+  const template = h.actions.createTemplate(definition, h.owner);
+  const run = h.actions.createRun({ template_id: template.id, template_version: template.version, values: { person: 'Renée "Alex"', count: '2' } }, h.owner);
+  assert.deepEqual(run.steps[0].config, { connection: 'provision_flow', body: { person: 'Renée "Alex"', devices: 2 } });
+  h.actions.updateTemplate(template.id, { version: template.version, steps: [{ ...definition.steps[0], config: { connection: 'replacement_flow', body: '{"person":"{{person}}"}' } }] }, h.owner);
+  assert.equal(h.actions.getRun(run.id, h.owner).steps[0].config.connection, 'provision_flow');
+  assert.equal(h.actions.getRun(run.id, h.owner).definition.steps[0].config.body, definition.steps[0].config.body);
+  for (const body of ['not JSON', '{"{{person}}":"bad property"}', '{"person":"{{undeclared}}"}']) assert.throws(() => validateActionDefinition({ ...definition, steps: [{ ...definition.steps[0], config: { connection: 'provision_flow', body } }] }));
+  assert.throws(() => validateActionDefinition({ ...definition, steps: [{ ...definition.steps[0], config: { connection: 'provision_flow', body: '{}', triggerUrl: 'https://secret.example.test/trigger?sig=private' } }] }), /step configuration/);
+  const bounded = validateActionDefinition({ name: 'Bounded flow', variables: [{ key: 'detail', type: 'text', required: true }], steps: [{ type: 'power_automate', config: { connection: 'provision_flow', body: JSON.stringify({ text: '{{detail}}'.repeat(500) }) } }] });
+  assert.throws(() => renderActionSteps(bounded, { detail: 'x'.repeat(4000) }, h.owner, h.desk), /at most one megabyte/);
+});

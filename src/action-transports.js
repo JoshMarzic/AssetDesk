@@ -28,6 +28,17 @@ function webUrl(value, label) {
   return url;
 }
 
+function flowUrl(value) {
+  if (typeof value !== 'string' || value.length > 8192 || /\s|\\|[\x00-\x1f\x7f-\x9f]/.test(value)) throw error('Provide a valid Power Automate trigger URL.');
+  let url;
+  try { url = new URL(value); } catch { throw error('Provide a valid Power Automate trigger URL.'); }
+  const local = ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname);
+  if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) || url.username || url.password || url.hash) throw error('Power Automate triggers require HTTPS without URL credentials or a fragment.');
+  // Signed query parameters are credentials. Keep the complete configured URL
+  // private and send it unchanged rather than rebuilding its signature query.
+  return value;
+}
+
 export function normalizeActionPublicUrl(value = '') {
   if (value === '') return '';
   if (typeof value !== 'string' || value.length > 2000 || CONTROLS.test(value) || value.includes('\\')) throw error('Provide a valid public approval URL.');
@@ -42,10 +53,17 @@ export function normalizeActionConnections(value = []) {
     if (!plainObject(input) || typeof input.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(input.id) || ids.has(input.id)) throw error('Give each API connection a unique valid identifier.');
     ids.add(input.id);
     if (typeof input.name !== 'string' || !input.name.trim() || [...input.name].length > 100 || CONTROLS.test(input.name)) throw error('Give each API connection a name of at most 100 characters.');
-    if (typeof input.baseUrl !== 'string' || input.baseUrl.length > 2000 || CONTROLS.test(input.baseUrl) || input.baseUrl.includes('\\')) throw error('Provide a valid API connection base URL.');
-    const base = webUrl(input.baseUrl, 'API connection base URL');
-    const methods = input.methods ?? ['GET', 'POST'], roles = input.roles ?? ['admin'];
+    const kind = input.kind ?? 'api';
+    if (!['api', 'power_automate'].includes(kind)) throw error('Choose API or Power Automate for each connection kind.');
+    let destination;
+    if (kind === 'power_automate') destination = { triggerUrl: flowUrl(input.triggerUrl) };
+    else {
+      if (typeof input.baseUrl !== 'string' || input.baseUrl.length > 2000 || CONTROLS.test(input.baseUrl) || input.baseUrl.includes('\\')) throw error('Provide a valid API connection base URL.');
+      destination = { baseUrl: webUrl(input.baseUrl, 'API connection base URL').href.replace(/\/$/, '') };
+    }
+    const methods = input.methods ?? (kind === 'power_automate' ? ['POST'] : ['GET', 'POST']), roles = input.roles ?? ['admin'];
     if (!Array.isArray(methods) || !methods.length || methods.some(method => !METHODS.includes(method))) throw error('Choose valid HTTP methods for each API connection.');
+    if (kind === 'power_automate' && (methods.length !== 1 || methods[0] !== 'POST')) throw error('Power Automate connections use POST only.');
     if (!Array.isArray(roles) || !roles.length || roles.some(role => !ROLES.includes(role))) throw error('Choose valid account roles for each API connection.');
     const timeoutMs = input.timeoutMs ?? 15000;
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 30000) throw error('API connection timeouts must be between 100 and 30000 milliseconds.');
@@ -57,7 +75,7 @@ export function normalizeActionConnections(value = []) {
         || typeof header !== 'string' || header.length > 8192 || CONTROLS.test(header)) throw error('Provide valid API connection headers without routing overrides or control characters.');
       cleanHeaders[name] = header;
     }
-    return { id: input.id, name: input.name.trim(), baseUrl: base.href.replace(/\/$/, ''), headers: cleanHeaders,
+    return { id: input.id, name: input.name.trim(), kind, ...destination, headers: cleanHeaders,
       methods: [...new Set(methods)], roles: [...new Set(roles)], timeoutMs };
   });
 }
@@ -128,7 +146,7 @@ export class ActionTransports {
   capabilities(user) {
     const configured = Boolean(this.#smtp.host && this.#smtp.from);
     return { email: { configured }, approval: { configured: configured && Boolean(this.#publicUrl) },
-      connections: this.#connections.filter(connection => user?.active !== false && connection.roles.includes(user?.role)).map(({ id, name, baseUrl, methods }) => ({ id, name, baseUrl, methods: [...methods] })),
+      connections: this.#connections.filter(connection => user?.active !== false && connection.roles.includes(user?.role)).map(({ id, name, kind, baseUrl, methods }) => ({ id, name, kind, ...(kind === 'api' ? { baseUrl } : {}), methods: [...methods] })),
       publicUrl: this.#publicUrl };
   }
   async sendEmail({ to, subject, text, messageId } = {}) {
@@ -159,9 +177,17 @@ export class ActionTransports {
   }
   async callApi({ connection: id, method, path, body } = {}, user) {
     const connection = this.#connections.find(value => value.id === id);
-    if (!connection || user?.active === false || !connection.roles.includes(user?.role)) throw error('This API connection is not configured or is unavailable to your account.', 403, { blocked: true });
+    if (!connection || connection.kind !== 'api' || user?.active === false || !connection.roles.includes(user?.role)) throw error('This API connection is not configured or is unavailable to your account.', 403, { blocked: true });
     if (!connection.methods.includes(method)) throw error('This HTTP method is not allowed for the API connection.', 403, { blocked: true });
     const url = requestUrl(connection.baseUrl, path);
+    return this.#request(connection, url, method, body);
+  }
+  async triggerFlow({ connection: id, body } = {}, user) {
+    const connection = this.#connections.find(value => value.id === id);
+    if (!connection || connection.kind !== 'power_automate' || user?.active === false || !connection.roles.includes(user?.role)) throw error('This Power Automate connection is not configured or is unavailable to your account.', 403, { blocked: true });
+    return this.#request(connection, connection.triggerUrl, 'POST', body === undefined || body === null || body === '' ? {} : body, 'Power Automate');
+  }
+  async #request(connection, url, method, body, label = 'API') {
     const headers = { ...connection.headers };
     let encoded;
     if (body !== undefined && body !== null && body !== '') {
@@ -175,11 +201,11 @@ export class ActionTransports {
     try {
       const response = await untilAborted(this.#fetch(url, { method, headers, ...(encoded === undefined ? {} : { body: encoded }), signal, redirect: 'error' }), signal);
       await discardResponse(response, signal);
-      if (response.status < 200 || response.status > 299) throw error(`The API call returned HTTP ${response.status}.`, 502, { httpStatus: response.status, uncertain: response.status >= 500 });
+      if (response.status < 200 || response.status > 299) throw error(`The ${label} call returned HTTP ${response.status}.`, 502, { httpStatus: response.status, uncertain: response.status >= 500 });
       return { status: response.status };
     } catch (failure) {
       if (failure?.safeMessage) throw failure;
-      throw error(signal.aborted ? 'The API request timed out. Check the remote service before retrying.' : 'The API result could not be confirmed. Check the remote service before retrying.', signal.aborted ? 504 : 502, { uncertain: true });
+      throw error(signal.aborted ? `The ${label} request timed out. Check the remote service before retrying.` : `The ${label} result could not be confirmed. Check the remote service before retrying.`, signal.aborted ? 504 : 502, { uncertain: true });
     } finally { clearTimeout(deadline); }
   }
 }

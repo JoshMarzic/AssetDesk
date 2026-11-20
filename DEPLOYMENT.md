@@ -189,7 +189,7 @@ Ticket-note tools still do not send customer email. Automation email uses the se
 
 ## Configure Actions email and API connections
 
-The Actions area includes executable approvals, send-email steps, API calls, manual tasks, and delays. Tasks and delays need no extra services. SMTP delivery and API calls remain unavailable until an administrator configures their connections; a run displays its actual blocked or waiting state.
+The Actions area includes executable approvals, send-email steps, API calls, Power Automate flows, manual tasks, and delays. Tasks and delays need no extra services. SMTP delivery, API calls, and flow triggers remain unavailable until an administrator configures their connections; a run displays its actual blocked or waiting state.
 
 For email, add these entries to the private `.env` on the Docker host, using your own mail service values:
 
@@ -214,6 +214,16 @@ ACTION_API_CONNECTIONS='[{"id":"service_desk","name":"Service desk API","baseUrl
 ```
 
 The workflow selects the connection and supplies a relative path, such as `/requests`, plus the method and JSON body. Only the configured origin, base path, allowed methods, and account roles can be used. Connections default to administrator access; explicitly include `"technician"` in `roles` when those users should be allowed to run that integration. Connection credentials are not returned to the browser or stored in templates. Response bodies are bounded and are not exposed as full run logs. Redirects are not followed.
+
+For **Power Automate**, create a flow with an HTTP request trigger and copy its full HTTPS trigger URL into a connection with `kind: "power_automate"`. Add it to the same `ACTION_API_CONNECTIONS` array alongside any API connections:
+
+```dotenv
+ACTION_API_CONNECTIONS='[{"id":"employee_flow","name":"Employee onboarding flow","kind":"power_automate","triggerUrl":"https://your-flow-host.example/workflows/your-flow/triggers/manual/paths/invoke?api-version=2016-06-01&sig=your-private-signature","roles":["admin"],"timeoutMs":15000}]'
+```
+
+Use the real URL supplied by your flow's trigger. It can contain a private signature, so keep it in the server environment. The browser and saved workflow receive only the connection identifier and name. The server sends a POST to that exact configured URL; the template supplies the JSON body with variable placeholders. Connection role checks, timeouts, response-size limits, and redirect restrictions also apply to flow triggers. If the trigger requires additional authentication headers, configure those on the connection just as for an API.
+
+In the template, **Technical implementation** shows the configured operation and payload while keeping credentials private. An accepted trigger response (including HTTP 202) means Power Automate accepted the request. Follow the flow's subsequent progress in Power Automate; this step does not wait for a downstream approval or the entire remote flow to finish. Use an AssetDesk Approval step when the local workflow must wait for a decision.
 
 For a variable in a JSON value, use valid JSON in the template, such as `{"person":"{{person_name}}","days":"{{days}}"}`. String values are serialized safely, and a whole-value number variable can remain numeric. Path variables are URL-encoded. Email subjects and recipients are checked after substitution.
 

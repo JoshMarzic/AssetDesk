@@ -26,3 +26,14 @@ test('invalid automation settings fail with fixed errors instead of echoing cred
   assert.throws(() => actionsConfigFromEnv({ ACTION_API_CONNECTIONS: '[{"Authorization":"private-syntax-secret"' }), error => !error.message.includes('private-syntax-secret') && /JSON/.test(error.message));
   for (const env of [{ SMTP_PORT: '0' }, { SMTP_SECURE: 'maybe' }, { SMTP_USER: 'account' }, { ACTION_PUBLIC_URL: 'https://name:secret@example.test/' }, { ACTION_API_CONNECTIONS: '{}' }]) assert.throws(() => actionsConfigFromEnv(env));
 });
+
+test('Power Automate trigger credentials stay private in environment-backed connection metadata', () => {
+  const config = actionsConfigFromEnv({ ACTION_API_CONNECTIONS: JSON.stringify([{ id: 'onboarding', name: 'Employee onboarding', kind: 'power_automate', triggerUrl: 'https://flow.example.test/workflows/private-flow/invoke?sig=private-flow-signature', headers: { Authorization: 'Bearer private-flow-bearer' } }]) });
+  const transports = new ActionTransports(config);
+  const connections = transports.capabilities({ role: 'admin' }).connections;
+  assert.equal(connections.length, 1); assert.equal(connections[0].kind, 'power_automate');
+  assert.equal(connections[0].name, 'Employee onboarding');
+  assert.deepEqual(connections[0].methods, ['POST']);
+  assert.doesNotMatch(JSON.stringify(connections), /private-flow|sig=|triggerUrl|Authorization|Bearer/);
+  assert.equal(transports.capabilities({ role: 'technician' }).connections.length, 0);
+});

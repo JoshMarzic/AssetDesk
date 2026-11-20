@@ -52,15 +52,17 @@ export async function harness(t, { mobile = false, actionTransports: suppliedTra
   }
   workspace.linkTicket(TARGET_KEY, laptop.id, admin);
   const worker = new Worker({ store, desk, workspace, logger: { error() {} } });
-  const actions = new ActionsStore(desk), actionMessages = [], actionApiCalls = [];
+  const actions = new ActionsStore(desk), actionMessages = [], actionApiCalls = [], actionFlowCalls = [];
   let origin = '';
   const actionTransports = suppliedTransports || {
     get publicUrl() { return origin; },
     get config() { return { publicUrl: origin }; },
     capabilities() { return { email: { configured: true }, approval: { configured: true }, publicUrl: origin,
-      connections: [{ id: 'browser_service', name: 'Demo service', baseUrl: 'https://service.example.test/v1', methods: ['GET', 'POST'] }] }; },
+      connections: [{ id: 'browser_service', name: 'Demo service', kind: 'api', baseUrl: 'https://service.example.test/v1', methods: ['GET', 'POST'] },
+        { id: 'browser_flow', name: 'Employee onboarding flow', kind: 'power_automate', methods: ['POST'] }] }; },
     async sendEmail(message) { actionMessages.push(structuredClone(message)); return { messageId: message.messageId || 'browser-message' }; },
     async callApi(request, user) { actionApiCalls.push({ ...structuredClone(request), actor_id: user.id }); return { status: 200 }; },
+    async triggerFlow(request, user) { actionFlowCalls.push({ ...structuredClone(request), actor_id: user.id }); return { status: 202 }; },
   };
   const actionsRunner = new ActionsRunner({ actions, transports: actionTransports, logger: { error() {} } });
   const config = { inboundToken: 'native-browser-intake-test-token-12345', adminToken: 'native-browser-admin-test-token-123456', cookieSecure: false };
@@ -75,7 +77,7 @@ export async function harness(t, { mobile = false, actionTransports: suppliedTra
   page.on('pageerror', error => errors.push(error.message));
   page.on('request', request => requests.push(request.url()));
   t.after(async () => { await browser.close(); await actionsRunner.stop(); await worker.stop(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); store.close(); });
-  return { store, desk, workspace, worker, actions, actionsRunner, actionMessages, actionApiCalls, actionTransports, browser, context, page, errors, requests, origin, admin, avery, casey, general, assetCategory, publicCategory, privateCategory, privateAssetCategory, publicMedia, privateMedia, vpnArticle, privateArticle, person, laptop, monitor, privateAsset, restrictedPerson, visibleOwnedPC, responseTemplate };
+  return { store, desk, workspace, worker, actions, actionsRunner, actionMessages, actionApiCalls, actionFlowCalls, actionTransports, browser, context, page, errors, requests, origin, admin, avery, casey, general, assetCategory, publicCategory, privateCategory, privateAssetCategory, publicMedia, privateMedia, vpnArticle, privateArticle, person, laptop, monitor, privateAsset, restrictedPerson, visibleOwnedPC, responseTemplate };
 }
 
 export async function signIn(page, origin, email = ADMIN_EMAIL) {

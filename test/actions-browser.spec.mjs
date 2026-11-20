@@ -108,18 +108,34 @@ test('A highlighted variable workflow can be saved as a template and reused with
   }
   if (!await h.page.getByLabel('Step 1 type', { exact: true }).count()) await h.page.getByRole('button', { name: 'Add step', exact: true }).click();
   const availableTypes = await h.page.getByLabel('Step 1 type', { exact: true }).locator('option').evaluateAll(options => options.map(option => option.value));
-  for (const type of ['approval', 'email', 'api', 'task', 'delay']) assert.ok(availableTypes.includes(type), `The action builder must expose the ${type} step type.`);
+  for (const type of ['approval', 'email', 'api', 'power_automate', 'task', 'delay']) assert.ok(availableTypes.includes(type), `The action builder must expose the ${type} step type.`);
   await h.page.getByLabel('Step 1 type', { exact: true }).selectOption('task');
   await h.page.getByLabel('Step 1 name', { exact: true }).fill('Prepare equipment');
   await h.page.getByLabel('Step 1 instructions', { exact: true }).fill('Prepare {{equipment_details}} for {{person_name}}.');
   await h.page.locator('.action-variable-token').first().waitFor();
+  await h.page.getByRole('heading', { name: 'Technical implementation', exact: true }).waitFor();
+  const implementation = h.page.getByRole('region', { name: 'Step 1 technical implementation', exact: true });
+  await implementation.waitFor();
+  assert.match(await implementation.innerText(), /Prepare \{\{equipment_details\}\} for \{\{person_name\}\}\./);
+  assert.ok(await implementation.locator('.action-variable-token').count() >= 2, 'Executable implementation placeholders must remain visibly highlighted.');
   await h.page.screenshot({ path: '/tmp/assetdesk-actions-builder.png', fullPage: true });
   const created = h.page.waitForResponse(response => new URL(response.url()).pathname === '/api/desk/actions/templates' && response.request().method() === 'POST');
   await h.page.getByRole('button', { name: 'Save as template', exact: true }).click();
   const response = await created; assert.equal(response.status(), 201, await response.text());
   const template = await response.json();
+  await h.page.getByLabel('Template title', { exact: true }).waitFor();
+  assert.equal(await h.page.getByLabel('Template title', { exact: true }).inputValue(), template.name);
+  assert.equal(await h.page.getByLabel('Description', { exact: true }).inputValue(), template.description);
+  await h.page.getByRole('region', { name: 'Step 1 technical implementation', exact: true }).waitFor();
   assert.equal(h.actions.listRuns(h.admin).total, 0, 'Saving a template must not execute its steps.');
   assert.equal(template.variables.length, 2); assert.match(template.steps[0].config.instructions, /\{\{person_name\}\}/);
+  await h.page.goto(`${h.origin}/#actions`);
+  await h.page.getByRole('tab', { name: /^Templates/ }).click();
+  const card = h.page.locator('.action-template-card').filter({ has: h.page.getByRole('heading', { name: template.name, exact: true }) });
+  await card.getByText('Technical implementation', { exact: true }).click();
+  assert.match(await card.innerText(), /Prepare \{\{equipment_details\}\} for \{\{person_name\}\}\./);
+  assert.match(await card.innerText(), /Reusable preparation instructions/);
+  await h.page.screenshot({ path: '/tmp/assetdesk-actions-template-details.png', fullPage: true });
   const first = await startTemplate(h, template, { person_name: 'Alex Johnson', equipment_details: 'a design laptop' });
   await waitState(h, first.id, 'waiting_task');
   const changed = h.actions.updateTemplate(template.id, { version: template.version, steps: [{ ...template.steps[0], config: { instructions: 'New standard: prepare {{equipment_details}} for {{person_name}}.', assignee_email: '' } }] }, h.admin);
@@ -199,12 +215,52 @@ test('An API-call action renders the selected connection and records its real ex
   assert.equal(await connection.inputValue(), 'browser_service');
   assert.ok((await connection.locator('option').allTextContents()).includes('Demo service'));
   assert.deepEqual(await h.page.getByLabel('Step 1 method', { exact: true }).locator('option').allTextContents(), ['GET', 'POST'], 'The builder must offer only methods allowed by the selected connection.');
+  const implementation = h.page.getByRole('region', { name: 'Step 1 technical implementation', exact: true });
+  assert.match(await implementation.innerText(), /POST/);
+  assert.match(await implementation.innerText(), /https:\/\/service\.example\.test\/v1\/people\/\{\{employee_id\}\}/);
+  assert.match(await implementation.innerText(), /"employee":\s*"\{\{employee_id\}\}"/);
   const run = await startTemplate(h, template, { employee_id: 'employee-1042' });
   await waitState(h, run.id, 'completed'); assert.equal(h.actionApiCalls.length, 1);
   const call = h.actionApiCalls[0]; assert.equal(call.connection, 'browser_service'); assert.equal(call.method, 'POST'); assert.ok(call.path.includes('employee-1042'));
+  assert.deepEqual(call.body, { employee: 'employee-1042' }, 'The server must execute the same substituted JSON shown in the implementation.');
   await h.page.reload();
   await h.page.getByText(/200/).first().waitFor();
+  const runImplementation = h.page.getByRole('region', { name: 'Step 1 technical implementation', exact: true });
+  await runImplementation.getByText('With this run’s values', { exact: true }).click();
+  assert.match(await runImplementation.innerText(), /https:\/\/service\.example\.test\/v1\/people\/employee-1042/);
+  assert.match(await runImplementation.innerText(), /"employee":\s*"employee-1042"/);
   assert.equal(h.actionMessages.length, 0); assert.deepEqual(h.errors, []);
+});
+
+test('A Power Automate template shows its technical request and confirms trigger acceptance after substituting variables', { timeout: 90000 }, async t => {
+  const h = await harness(t);
+  const template = h.actions.createTemplate({ name: 'Start employee onboarding', description: 'Send the employee details to the configured Power Automate flow.',
+    variables: [{ key: 'person_name', label: 'Employee name', type: 'text', required: true, default: '', description: '' }],
+    steps: [{ id: 'start-onboarding', type: 'power_automate', name: 'Start onboarding for {{person_name}}', config: { connection: 'browser_flow', body: '{"person":"{{person_name}}","request":"Create account"}' } }],
+  }, h.admin);
+  await openActions(h);
+  await h.page.goto(`${h.origin}/#actions/templates/${template.id}/edit`);
+  assert.equal(await h.page.getByLabel('Template title', { exact: true }).inputValue(), template.name);
+  assert.equal(await h.page.getByLabel('Description', { exact: true }).inputValue(), template.description);
+  const connection = h.page.getByLabel('Step 1 Power Automate connection', { exact: true });
+  assert.equal(await connection.inputValue(), 'browser_flow');
+  assert.deepEqual(await connection.locator('option').evaluateAll(options => options.filter(option => option.value).map(option => option.value)), ['browser_flow'], 'Flow steps must offer flow destinations rather than general API connections.');
+  const implementation = h.page.getByRole('region', { name: 'Step 1 technical implementation', exact: true });
+  assert.match(await implementation.innerText(), /POST/);
+  assert.match(await implementation.innerText(), /"person":\s*"\{\{person_name\}\}"/);
+  assert.doesNotMatch(await implementation.innerText(), /[?&]sig=/, 'Private signed trigger URLs must not appear in template implementations.');
+  await h.page.screenshot({ path: '/tmp/assetdesk-actions-power-automate.png', fullPage: true });
+  const run = await startTemplate(h, template, { person_name: 'Morgan "Mo" Quinn' });
+  await waitState(h, run.id, 'completed');
+  assert.equal(h.actionFlowCalls.length, 1);
+  assert.equal(h.actionFlowCalls[0].connection, 'browser_flow');
+  assert.deepEqual(h.actionFlowCalls[0].body, { person: 'Morgan "Mo" Quinn', request: 'Create account' });
+  assert.equal(h.actionApiCalls.length, 0); assert.equal(h.actionMessages.length, 0);
+  await h.page.reload();
+  await h.page.getByText('HTTP 202 · Flow trigger accepted', { exact: true }).waitFor();
+  assert.match(await h.page.locator('#main-content').innerText(), /not completion of the Power Automate flow/);
+  await noOverflow(h.page);
+  assert.deepEqual(h.errors, []);
 });
 
 test('Actions, variable entry and a waiting manual task fit a mobile viewport', { timeout: 90000 }, async t => {
@@ -213,7 +269,7 @@ test('Actions, variable entry and a waiting manual task fit a mobile viewport', 
   await h.page.goto(h.origin + '/#actions');
   await h.page.getByRole('button', { name: 'New action', exact: true }).waitFor(); await noOverflow(h.page);
   await h.page.getByRole('button', { name: 'New template', exact: true }).click();
-  await h.page.getByLabel('Template name', { exact: true }).waitFor(); await noOverflow(h.page);
+  await h.page.getByLabel('Template title', { exact: true }).waitFor(); await noOverflow(h.page);
   await h.page.goto(`${h.origin}/#actions/new?template=${template.id}`);
   await h.page.getByLabel('Person receiving equipment', { exact: true }).waitFor(); await noOverflow(h.page);
   const run = await startTemplate(h, template, { person_name: 'Morgan Quinn', equipment_details: 'PC-207' });
