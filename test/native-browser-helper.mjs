@@ -7,12 +7,14 @@ import { DeskStore } from '../src/desk-store.js';
 import { WorkspaceStore } from '../src/workspace-store.js';
 import { Worker } from '../src/worker.js';
 import { createApp } from '../src/app.js';
+import { ActionsStore } from '../src/actions-store.js';
+import { ActionsRunner } from '../src/actions-runner.js';
 
 export const PASSWORD = 'Native-browser-password-2026';
 export const ADMIN_EMAIL = 'admin@example.test';
 export const TARGET_KEY = 'HD-BROWSER002';
 
-export async function harness(t, { mobile = false } = {}) {
+export async function harness(t, { mobile = false, actionTransports: suppliedTransports } = {}) {
   const store = new Store(':memory:');
   const desk = new DeskStore(store);
   const admin = await desk.ensureAdmin({ name: 'Jordan Blake', email: ADMIN_EMAIL, password: PASSWORD });
@@ -50,17 +52,30 @@ export async function harness(t, { mobile = false } = {}) {
   }
   workspace.linkTicket(TARGET_KEY, laptop.id, admin);
   const worker = new Worker({ store, desk, workspace, logger: { error() {} } });
+  const actions = new ActionsStore(desk), actionMessages = [], actionApiCalls = [];
+  let origin = '';
+  const actionTransports = suppliedTransports || {
+    get publicUrl() { return origin; },
+    get config() { return { publicUrl: origin }; },
+    capabilities() { return { email: { configured: true }, approval: { configured: true }, publicUrl: origin,
+      connections: [{ id: 'browser_service', name: 'Demo service', baseUrl: 'https://service.example.test/v1', methods: ['GET', 'POST'] }] }; },
+    async sendEmail(message) { actionMessages.push(structuredClone(message)); return { messageId: message.messageId || 'browser-message' }; },
+    async callApi(request, user) { actionApiCalls.push({ ...structuredClone(request), actor_id: user.id }); return { status: 200 }; },
+  };
+  const actionsRunner = new ActionsRunner({ actions, transports: actionTransports, logger: { error() {} } });
   const config = { inboundToken: 'native-browser-intake-test-token-12345', adminToken: 'native-browser-admin-test-token-123456', cookieSecure: false };
-  const server = createApp({ store, desk, workspace, worker, config }).listen(0, '127.0.0.1');
+  const server = createApp({ store, desk, workspace, worker, config, actions, actionRunner: actionsRunner, actionTransports }).listen(0, '127.0.0.1');
   await once(server, 'listening');
+  origin = `http://127.0.0.1:${server.address().port}`;
   worker.start();
+  actionsRunner.start();
   const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || (existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : undefined), headless: true, args: ['--no-sandbox'] });
   const context = await browser.newContext(mobile ? { viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, isMobile: true, hasTouch: true } : { viewport: { width: 1440, height: 1024 }, deviceScaleFactor: 1 });
   const page = await context.newPage(), errors = [], requests = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('request', request => requests.push(request.url()));
-  t.after(async () => { await browser.close(); await worker.stop(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); store.close(); });
-  return { store, desk, workspace, worker, browser, context, page, errors, requests, origin: `http://127.0.0.1:${server.address().port}`, admin, avery, casey, general, assetCategory, publicCategory, privateCategory, privateAssetCategory, publicMedia, privateMedia, vpnArticle, privateArticle, person, laptop, monitor, privateAsset, restrictedPerson, visibleOwnedPC, responseTemplate };
+  t.after(async () => { await browser.close(); await actionsRunner.stop(); await worker.stop(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); store.close(); });
+  return { store, desk, workspace, worker, actions, actionsRunner, actionMessages, actionApiCalls, actionTransports, browser, context, page, errors, requests, origin, admin, avery, casey, general, assetCategory, publicCategory, privateCategory, privateAssetCategory, publicMedia, privateMedia, vpnArticle, privateArticle, person, laptop, monitor, privateAsset, restrictedPerson, visibleOwnedPC, responseTemplate };
 }
 
 export async function signIn(page, origin, email = ADMIN_EMAIL) {

@@ -4,6 +4,9 @@ import { createApp } from './app.js';
 import { configFromEnv } from './config.js';
 import { DeskStore } from './desk-store.js';
 import { WorkspaceStore } from './workspace-store.js';
+import { ActionsStore } from './actions-store.js';
+import { ActionsRunner } from './actions-runner.js';
+import { ActionTransports } from './action-transports.js';
 
 const config = configFromEnv();
 const store = new Store(config.databasePath);
@@ -13,10 +16,14 @@ if (config.dashboardAdminPassword) {
   await desk.ensureAdmin({ email: config.dashboardAdminEmail, name: 'Desk administrator', password: config.dashboardAdminPassword });
 }
 const worker = new Worker({ store, desk, workspace, supportEmails: config.supportEmails });
-const app = createApp({ store, worker, workspace, config, desk });
+const actions = new ActionsStore(desk);
+const actionTransports = new ActionTransports(config.actions);
+const actionRunner = new ActionsRunner({ actions, transports: actionTransports });
+const app = createApp({ store, worker, workspace, config, desk, actions, actionTransports, actionRunner });
 const server = app.listen(config.port, '0.0.0.0', () => {
   console.log(`AssetDesk service desk listening on port ${config.port}`);
   worker.start();
+  actionRunner.start();
 });
 server.requestTimeout = 30_000;
 server.headersTimeout = 15_000;
@@ -26,6 +33,7 @@ async function shutdown() {
   stopping = true;
   server.close();
   await worker.stop();
+  await actionRunner.stop();
   store.close();
 }
 process.on('SIGTERM', shutdown);

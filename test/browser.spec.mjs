@@ -98,7 +98,7 @@ test('personnel and PC records have ownership and bidirectional native ticket hi
   assert.deepEqual(h.errors, []);
 });
 
-test('new tickets link native assets immediately and Actions is a usable placeholder', { timeout: 60000 }, async t => {
+test('new tickets link native assets immediately and Actions exposes automation and template entry points', { timeout: 60000 }, async t => {
   const h = await harness(t);
   await signIn(h.page, h.origin);
   await h.page.getByRole('button', { name: 'New ticket', exact: true }).first().click();
@@ -118,7 +118,8 @@ test('new tickets link native assets immediately and Actions is a usable placeho
   await h.page.getByRole('button', { name: 'Actions', exact: true }).click();
   await h.page.getByRole('heading', { name: 'Actions', exact: true }).waitFor();
   assert.match(await h.page.locator('#main-content').innerText(), /automation/i);
-  assert.equal(await h.page.getByRole('button', { name: /Run action|Create action/i }).count(), 0, 'Placeholder must not imply executable automations.');
+  await h.page.getByRole('button', { name: 'New action', exact: true }).waitFor();
+  assert.match(await h.page.locator('#main-content').innerText(), /templates/i);
   await h.page.screenshot({ path: '/tmp/assetdesk-native-actions.png', fullPage: true });
   assert.ok(h.requests.every(url => new URL(url).origin === h.origin), 'Normal workflows must use AssetDesk alone.');
   assert.deepEqual(h.errors, []);
@@ -133,6 +134,7 @@ test('native dashboard, asset detail and Actions fit a mobile viewport', { timeo
   await noOverflow(h.page);
   await h.page.goto(h.origin + '/#actions');
   await h.page.getByRole('heading', { name: 'Actions', exact: true }).waitFor();
+  await h.page.getByRole('button', { name: 'New action', exact: true }).waitFor();
   await noOverflow(h.page);
   await h.page.screenshot({ path: '/tmp/assetdesk-native-mobile.png', fullPage: true });
   assert.deepEqual(h.errors, []);

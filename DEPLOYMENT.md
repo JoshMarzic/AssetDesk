@@ -27,7 +27,7 @@ No BookStack account, API token, extra database service, or second browser login
 6. Mention or manually link that asset ID on a ticket. Open the asset: its linked-ticket section should show that request and provide a link back to it.
 7. Open Knowledge base. The Assets area contains asset records and can also contain asset documentation. Create an article in a category you may edit.
 8. As an administrator, create a Restricted category and grant a named technician read and/or edit access. Verify another technician cannot find its category/articles in navigation, search, direct URLs, or media requests. Administrators retain access.
-9. Open Actions in the left navigation. It is deliberately a placeholder for future automations, with no runnable actions yet.
+9. Open Actions in the left navigation. Select New action, choose the equipment-preparation template, enter its highlighted variables, and start it. Complete the manual task and confirm the run finishes. Save another workflow as a template to reuse its structure with different people or requests.
 10. Open Reports below Actions. Search by a submitted-date range, type/category, technician, and other ticket fields, then expand the advanced filters for asset, SLA, and duration criteria. Date ranges include both selected days in UTC. Export CSV downloads all matching tickets using the applied filters, across every results page. Verify an exported file in your spreadsheet application and open a matching ticket from the report.
 11. Open a ticket and type a label into Tags, then press Enter. Confirm it appears immediately and remains after reopening the ticket. Search for it with the Tag filter in Reports and verify the CSV includes the tag. Tags can also be entered on the new-ticket form.
 12. As an administrator, open Settings and add a ticket category, priority with SLA targets, status, and technician. Create and update a ticket using those options, and verify Reports includes it. Existing deadlines stay unchanged unless you explicitly apply SLA changes to active tickets. Add more than 25 tags to verify there is no longer a per-ticket tag-count limit.
@@ -185,4 +185,44 @@ Back up the retained `intake` volume and private `.env` together. The SQLite dat
 
 `docker compose down` retains data. **`docker compose down -v` deletes the native database volume.** Old `database` and `bookstack` volumes should only be removed separately after their content has been backed up and the import verified.
 
-Actions is a placeholder only. Outgoing customer email, attachments, invitations/reset emails, business-hour calendars, and active automation execution are not supplied by this release.
+Ticket-note tools still do not send customer email. Automation email uses the separate SMTP settings below. Attachments, invitations/reset emails, and business-hour calendars are not supplied by this release.
+
+## Configure Actions email and API connections
+
+The Actions area includes executable approvals, send-email steps, API calls, manual tasks, and delays. Tasks and delays need no extra services. SMTP delivery and API calls remain unavailable until an administrator configures their connections; a run displays its actual blocked or waiting state.
+
+For email, add these entries to the private `.env` on the Docker host, using your own mail service values:
+
+```dotenv
+ACTION_PUBLIC_URL=https://helpdesk.example.com
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_FROM=helpdesk@example.com
+SMTP_USER=your-smtp-account
+SMTP_PASS=your-smtp-password
+```
+
+Port 587 with `SMTP_SECURE=false` uses required STARTTLS. For implicit TLS on port 465, set `SMTP_SECURE=true`. TLS verification remains enabled. An authenticated relay can omit both `SMTP_USER` and `SMTP_PASS` if the relay permits it. The sender must be one email address. Approval emails use `ACTION_PUBLIC_URL` to build the review link, so this address must be reachable by the approver and point to this AssetDesk installation. Keep the entire `/approve/` route available through the existing HTTPS reverse proxy.
+
+An approval emails the named person a review link. Opening the link shows the request; an explicit Approve or Reject form submission records the decision. The link grants access only to that request, expires, and cannot be reused for another decision. The approver does not need a technician account. Replying to the email does not approve the request. A rejected request stops downstream steps.
+
+API connections are a server-managed list. Set `ACTION_API_CONNECTIONS` to a JSON array in the private environment; this example uses placeholder credentials only:
+
+```dotenv
+ACTION_API_CONNECTIONS='[{"id":"service_desk","name":"Service desk API","baseUrl":"https://api.example.com/v1","headers":{"Authorization":"Bearer your-service-token"},"methods":["GET","POST"],"roles":["admin"],"timeoutMs":15000}]'
+```
+
+The workflow selects the connection and supplies a relative path, such as `/requests`, plus the method and JSON body. Only the configured origin, base path, allowed methods, and account roles can be used. Connections default to administrator access; explicitly include `"technician"` in `roles` when those users should be allowed to run that integration. Connection credentials are not returned to the browser or stored in templates. Response bodies are bounded and are not exposed as full run logs. Redirects are not followed.
+
+For a variable in a JSON value, use valid JSON in the template, such as `{"person":"{{person_name}}","days":"{{days}}"}`. String values are serialized safely, and a whole-value number variable can remain numeric. Path variables are URL-encoded. Email subjects and recipients are checked after substitution.
+
+Apply environment changes with:
+
+```sh
+docker compose up -d --build --wait assetdesk
+```
+
+Use a test recipient and an API test endpoint to verify the configured integration before using a production workflow. SMTP acceptance confirms the mail service accepted delivery; it does not guarantee inbox arrival. Failed or interrupted external operations can need attention. Check the remote system before explicitly retrying an uncertain step; AssetDesk does not automatically replay it after a restart. A blocked run can be retried after its connection is configured.
+
+Backups of the `intake` volume also include action templates, run snapshots, step states, approval decisions, and action activity. Keep the private mail/API configuration with your secure deployment backup. Additional action types belong in the central type catalog with their validation, execution handler, and editor fields.

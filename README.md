@@ -2,11 +2,11 @@
 
 AssetDesk is a self-contained IT service desk: **tickets, technicians, knowledge, personnel, hardware, and support history in one application**. It runs as one Docker service and stores its data in SQLite. BookStack and MariaDB are not required by the application.
 
-The home dashboard shows the active queue, unassigned and overdue work, and technician workload. Knowledge categories have their own access controls. Assets include people and equipment, with ticket links in both directions. **Actions** is a reserved automation workspace with a placeholder landing page; it does not execute automations yet.
+The home dashboard shows the active queue, unassigned and overdue work, and technician workload. Knowledge categories have their own access controls. Assets include people and equipment, with ticket links in both directions. **Actions** runs reusable workflows with approvals, email, API calls, manual tasks, and delays.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for Docker Desktop installation, upgrades, migration, HTTPS, and mailbox routing.
 
-View the [AssetDesk Feature Tour (PDF)](docs/AssetDesk-Feature-Tour.pdf) for 23 pages of screenshots and feature captions using demonstration data.
+View the [AssetDesk v0.7 Feature Tour (PDF)](docs/AssetDesk-Feature-Tour.pdf) for 23 pages of screenshots and feature captions using demonstration data. This snapshot predates the executable Actions workflows introduced in v0.8.
 
 ## Run locally
 
@@ -83,7 +83,21 @@ You can also link an accessible asset manually from a ticket. The asset's detail
 
 ## Actions
 
-The left navigation includes **Actions**. It currently opens a clear placeholder for future onboarding, equipment-preparation, maintenance, and other repeatable automations. No actions are configured, scheduled, or run in this release.
+Select **Actions → New action** to open the workflow page. Start with a reusable template or build an ordered sequence of steps. Action templates separate the standard process from the details that change: for example, `{{person_name}}`, `{{request_details}}`, and `{{approver_email}}`. The editor highlights variable tokens and lists editable values together, so reviewers can see who the request concerns, what is requested, and who approves it.
+
+| Step | Behavior |
+| --- | --- |
+| Approval | Emails one recipient a review link, then pauses for an explicit Approve or Reject response. Rejection stops the workflow. |
+| Send email | Sends a plain-text message through the configured SMTP service. |
+| API call | Calls a server-configured API connection with the selected method, relative path, and JSON body. |
+| Manual task | Waits until the assigned technician completes the work. |
+| Delay | Waits for a persisted duration before proceeding. |
+
+**Save as template** stores a standard workflow without executing it. **Start action** validates the variables, snapshots the selected template and values, and starts a run. Later template edits do not change existing runs. Template owners and administrators can edit their templates; run controls also check the current user's permissions. The starter equipment-preparation template works without external integrations.
+
+Run details show progress, waiting steps, outcomes, and an activity history. Approval links expire, can be decided only once, and do not approve anything when simply opened by a browser or mail scanner. Approvers use the review page; ordinary email replies do not approve a request. Runs and wait states survive restarts. An external step interrupted before its outcome is known needs operator attention instead of being silently repeated; check the remote service before retrying it.
+
+Manual tasks and delays work without email or API configuration. Email and approval steps require SMTP settings, and approvals also require the public AssetDesk address. API calls require configured connections and permitted account roles. Unconfigured integrations produce a visible blocked state rather than a successful result. See [automation configuration](DEPLOYMENT.md#configure-actions-email-and-api-connections).
 
 ## Ticket reports and CSV export
 

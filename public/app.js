@@ -1,3 +1,5 @@
+import { createActionsUI } from './actions.js';
+
 const $ = (selector, root = document) => root.querySelector(selector);
 const app = $('#app');
 const drawer = $('#ticket-drawer');
@@ -71,6 +73,12 @@ function pill(status) { const tone = ['open', 'in_progress', 'waiting', 'resolve
 function newReportState() { return { draft: { date_field: 'created_at', sort: 'newest', limit: '25' }, applied: { date_field: 'created_at', sort: 'newest', limit: '25' }, tickets: [], total: 0, offset: 0, limit: 25, technicians: [], initialized: false, loading: false, exporting: false, error: '', generation: 0, advanced: false }; }
 const state = { session: null, current: 'overview', tickets: [], total: 0, technicians: [], dashboard: null, assets: [], responses: [], view: 'all', search: '', status: '', priority: '', category: '', assignee: '', sort: 'newest', offset: 0, filtersOpen: false, ticket: null, ticketTag: null, loading: false, generation: 0, busy: false, knowledge: null, knowledgeSearch: '', knowledgeCategory: '', knowledgeOffset: 0, article: null, articleEditing: false, articleDirty: false, articleSaving: false, knowledgeGeneration: 0, asset: null, assetTarget: null, assetSearch: '', assetType: '', assetCategory: '', assetOffset: 0, assetTotal: 0, assetGeneration: 0, categories: [], workflow: null, settingsTab: 'priorities', settingsGeneration: 0, settingsLoading: false, settingsError: '', reports: newReportState() };
 
+const actionsUI = createActionsUI({ api, esc, icon, toast, getUser: () => state.session?.user, getCurrentView: () => state.current, activate: activateActions, openTicket });
+function activateActions() {
+  state.article = null; state.articleTarget = null; state.articleEditing = false; state.articleDirty = false; state.asset = null; state.assetTarget = null;
+  activateView('actions');
+}
+
 function applyWorkflow(workflow) {
   if (state.workflow && workflow.version < state.workflow.version) return;
   state.workflow = workflow;
@@ -122,7 +130,7 @@ async function api(path, { method = 'GET', body } = {}) {
   const response = await fetch(path, { method, credentials: 'same-origin', headers: { Accept: 'application/json', ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(method !== 'GET' && state.session?.csrfToken ? { 'X-CSRF-Token': state.session.csrfToken } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    if (response.status === 401 && path !== '/api/desk/login') { state.session = null; state.ticketTag = null; state.reports = newReportState(); closeDialogs(); renderLogin(); }
+    if (response.status === 401 && path !== '/api/desk/login') { state.session = null; state.ticketTag = null; state.reports = newReportState(); actionsUI.reset(); closeDialogs(); renderLogin(); }
     const error = new Error(data.error || `Request failed (${response.status}).`);
     error.status = response.status;
     throw error;
@@ -169,6 +177,8 @@ function runSearch() {
 function navigate(view, clearSearch = true) {
   if (!['overview', 'tickets', 'my-tickets', 'assets', 'team', 'knowledge', 'actions', 'reports', 'settings'].includes(view)) return;
   if (!mayLeaveArticle()) return;
+  if (state.current === 'actions' && !actionsUI.canLeave()) return;
+  if (state.current === 'actions') actionsUI.leave();
   state.article = null; state.articleTarget = null; state.articleEditing = false; state.articleDirty = false; state.asset = null; state.assetTarget = null;
   closeDialogs();
   state.generation++;
@@ -184,7 +194,7 @@ async function refresh({ quiet = false } = {}) {
   if (!state.session) return;
   if (state.current === 'knowledge') { if (!state.article && !state.articleEditing) await loadKnowledge(); return; }
   if (state.current === 'assets') { if (state.asset) await openAsset(state.asset.id, { quiet: true }); else await loadAssets(); return; }
-  if (state.current === 'actions') { renderActions(); return; }
+  if (state.current === 'actions') { if (quiet) actionsUI.refresh({ quiet: true }); else await actionsUI.open(location.hash.startsWith('#actions') ? location.hash : '#actions'); return; }
   if (state.current === 'settings') { if (!quiet) await loadSettings(); return; }
   if (state.current === 'reports') { if (!quiet) { renderReports(); await loadReports(); } return; }
   const generation = ++state.generation;
@@ -634,7 +644,7 @@ document.addEventListener('click', async event => {
   const view = event.target.closest('[data-view]'); if (view) { state.view = view.dataset.view; state.offset = 0; if (!['overview', 'tickets', 'my-tickets'].includes(state.current)) state.current = 'tickets'; await refresh({ quiet: true }); return; }
   const action = event.target.closest('[data-action]')?.dataset.action;
   if (action === 'menu') $('.shell')?.classList.toggle('menu-open');
-  else if (action === 'logout') { try { await api('/api/desk/logout', { method: 'POST', body: {} }); state.session = null; state.dashboard = null; state.ticketTag = null; state.reports = newReportState(); closeDialogs(); renderLogin(); } catch (error) { toast(error.message, true); } }
+  else if (action === 'logout') { try { await api('/api/desk/logout', { method: 'POST', body: {} }); state.session = null; state.dashboard = null; state.ticketTag = null; state.reports = newReportState(); actionsUI.reset(); closeDialogs(); renderLogin(); } catch (error) { toast(error.message, true); } }
   else if (action === 'refresh') refresh({ quiet: true });
   else if (action === 'new-ticket') openNewTicket();
   else if (action === 'new-technician') openTechnician();
@@ -681,6 +691,8 @@ document.addEventListener('visibilitychange', () => { if (state.session && docum
 
 window.addEventListener('hashchange', () => {
   if (!state.session) return;
+  if (actionsUI.matches(location.hash)) { if (mayLeaveArticle()) actionsUI.open(location.hash); return; }
+  if (state.current === 'actions') { if (!actionsUI.canLeave()) { location.hash = actionsUI.hash || '#actions'; return; } actionsUI.leave(); }
   const article = articleLocation();
   if (article) {
     if (state.current === 'knowledge' && state.article?.id === article.id) scrollArticleAnchor(article.id, article.anchor);
@@ -714,6 +726,7 @@ function scrollArticleAnchor(id, anchor) {
   return true;
 }
 async function restoreLocation() {
+  if (actionsUI.matches(location.hash)) { await actionsUI.open(location.hash); return; }
   const article = articleLocation();
   const asset = location.hash.match(/^#assets\/([^/]+)$/);
   const ticket = location.hash.match(/^#tickets\/([^/]+)$/);
@@ -942,14 +955,13 @@ async function openAssetForm(asset = null, preferredCategory = '') {
   } catch (error) { toast(error.message, true); }
 }
 function renderActions() {
-  $('#breadcrumb-current').textContent = 'Actions'; document.title = 'Actions · AssetDesk';
-  $('#main-content').innerHTML = `<div class="page-heading"><div><div class="eyebrow">Automation workspace</div><h1>Actions</h1><p>A dedicated home for the repeatable work behind great support.</p></div><span class="planned-badge">Planned</span></div><section class="panel actions-landing"><span class="actions-symbol">${icon('spark')}</span><div class="eyebrow">Coming in a future update</div><h2>Turn repeatable work into reliable actions.</h2><p>This area will hold automations your team needs to run, track, and complete. For now, it is a placeholder; no automations are configured or executed here.</p><div class="actions-examples"><article>${icon('users')}<strong>Employee onboarding</strong><span>Coordinate the steps for a new starter.</span></article><article>${icon('laptop')}<strong>Equipment preparation</strong><span>Keep repeatable setup work organized.</span></article><article>${icon('check')}<strong>Routine maintenance</strong><span>Bring recurring checks into one place.</span></article></div><button class="btn" data-nav="tickets">${icon('ticket')}Back to tickets</button></section>`;
+  actionsUI.open(location.hash.startsWith('#actions') ? location.hash : '#actions');
 }
 document.addEventListener('click', event => {
   const category = event.target.closest('[data-knowledge-category]');
   if (category) { state.knowledgeCategory = category.dataset.knowledgeCategory; state.knowledgeOffset = 0; state.article = null; loadKnowledge(); }
 });
-window.addEventListener('beforeunload', event => { if (state.articleEditing && state.articleDirty) { event.preventDefault(); event.returnValue = ''; } });
+window.addEventListener('beforeunload', event => { if (state.articleEditing && state.articleDirty || actionsUI.isDirty()) { event.preventDefault(); event.returnValue = ''; } });
 
 // Reports keep draft controls separate from the last applied search so exports
 // always match the result set the technician has actually reviewed.
