@@ -30,6 +30,7 @@ No BookStack account, API token, extra database service, or second browser login
 9. Open Actions in the left navigation. It is deliberately a placeholder for future automations, with no runnable actions yet.
 10. Open Reports below Actions. Search by a submitted-date range, type/category, technician, and other ticket fields, then expand the advanced filters for asset, SLA, and duration criteria. Date ranges include both selected days in UTC. Export CSV downloads all matching tickets using the applied filters, across every results page. Verify an exported file in your spreadsheet application and open a matching ticket from the report.
 11. Open a ticket and type a label into Tags, then press Enter. Confirm it appears immediately and remains after reopening the ticket. Search for it with the Tag filter in Reports and verify the CSV includes the tag. Tags can also be entered on the new-ticket form.
+12. As an administrator, open Settings and add a ticket category, priority with SLA targets, status, and technician. Create and update a ticket using those options, and verify Reports includes it. Existing deadlines stay unchanged unless you explicitly apply SLA changes to active tickets. Add more than 25 tags to verify there is no longer a per-ticket tag-count limit.
 
 All-staff categories can allow or deny staff editing. Restricted categories use named-reader/editor grants. Editing or moving a record requires the appropriate category access. Personnel inventory records are separate from technician login accounts.
 

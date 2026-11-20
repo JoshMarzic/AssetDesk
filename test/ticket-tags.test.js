@@ -64,17 +64,17 @@ test('tags normalize Unicode and whitespace, reuse display names and apply idemp
   assert.match(removed.events.at(-1).body, /Removed tag: VIP/);
 });
 
-test('tag validation rejects invalid names, bounds Unicode characters and enforces the per-ticket limit atomically', async t => {
+test('tag validation bounds individual names while tickets accept more than 25 tags', async t => {
   const h = await harness(t); save(h.store);
   for (const value of [null, undefined, 4, {}, [], '', '   ', 'bad\nname', 'bad\tname', 'bad\u0085name', 'a'.repeat(51)]) assert.throws(() => h.desk.addTicketTag('HD-TAGS', value), error => error.statusCode === 400);
   const unicode = '😀'.repeat(50); assert.equal(normalizeTicketTag(unicode).name, unicode);
-  for (let index = 0; index < 25; index++) h.desk.addTicketTag('HD-TAGS', `Tag ${index}`);
+  for (let index = 0; index < 60; index++) h.desk.addTicketTag('HD-TAGS', `Tag ${index}`);
   const full = h.desk.getTicket('HD-TAGS');
-  assert.throws(() => h.desk.addTicketTag('HD-TAGS', 'overflow'), error => error.statusCode === 400);
-  assert.equal(h.desk.getTicket('HD-TAGS').version, full.version); assert.equal(h.desk.ticketTags('HD-TAGS').length, 25);
-  assert.equal(h.desk.addTicketTag('HD-TAGS', 'tag 0').version, full.version);
+  const extended = h.desk.addTicketTag('HD-TAGS', 'Another tag');
+  assert.equal(extended.version, full.version + 1); assert.equal(h.desk.ticketTags('HD-TAGS').length, 61);
+  assert.equal(h.desk.addTicketTag('HD-TAGS', 'tag 0').version, extended.version);
   h.desk.removeTicketTag('HD-TAGS', 'tag 0'); h.desk.addTicketTag('HD-TAGS', unicode);
-  assert.equal(h.desk.ticketTags('HD-TAGS').length, 25);
+  assert.equal(h.desk.ticketTags('HD-TAGS').length, 61);
   assert.throws(() => h.desk.addTicketTag('HD-MISSING', 'new'), error => error.statusCode === 404);
   assert.throws(() => h.desk.removeTicketTag('HD-MISSING', 'new'), error => error.statusCode === 404);
   assert.equal(h.store.db.prepare("SELECT COUNT(*) AS count FROM ticket_tags WHERE ticket_key='HD-MISSING'").get().count, 0);
@@ -117,9 +117,14 @@ test('manual creation accepts initial tags atomically and invalid tag lists crea
   assert.equal(created.status, 202); assert.equal(created.body.state, 'done');
   const ticket = (await h.request('/tickets/' + created.body.ticketKey, { session })).body;
   assert.deepEqual(ticket.tags, ['Needs follow-up', 'Triage']); assert.equal(ticket.source, 'manual');
+  const manyTags = Array.from({ length: 70 }, (_, index) => `Initial ${index}`);
+  const many = await h.request('/tickets', { method: 'POST', session, body: { ...body, tags: manyTags } });
+  assert.equal(many.status, 202); assert.equal(h.desk.ticketTags(many.body.ticketKey).length, 70);
+  for (let index = 0; index < 30; index++) h.desk.addTicketTag(many.body.ticketKey, `Later ${index}`, h.tech);
+  assert.equal(h.desk.getTicket(many.body.ticketKey).tags.length, 100);
   const counts = () => [h.store.db.prepare('SELECT COUNT(*) AS count FROM tickets').get().count, h.store.db.prepare('SELECT COUNT(*) AS count FROM messages').get().count];
   const before = counts();
-  for (const tags of [null, 'not an array', ['valid', 'bad\nvalue'], Array(26).fill('tag')]) assert.equal((await h.request('/tickets', { method: 'POST', session, body: { ...body, tags } })).status, 400);
+  for (const tags of [null, 'not an array', ['valid', 'bad\nvalue']]) assert.equal((await h.request('/tickets', { method: 'POST', session, body: { ...body, tags } })).status, 400);
   assert.deepEqual(counts(), before);
   const add = h.desk.addTicketTag.bind(h.desk); let attempts = 0;
   h.desk.addTicketTag = (...args) => { if (++attempts === 2) throw new Error('Simulated persistence failure'); return add(...args); };

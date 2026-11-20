@@ -5,15 +5,13 @@ import { createKnowledgeRouter } from './knowledge.js';
 import { createAssetsRouter } from './workspace-routes.js';
 import { createReportsRouter } from './reports.js';
 import { normalizeTicketTags } from './desk-store.js';
+import { createSettingsRouter } from './settings-routes.js';
 
 const COOKIE = 'assetdesk_session';
 const SESSION_MS = 8 * 60 * 60 * 1000;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const MAX_LOGIN_FAILURES = 10;
 const MAX_LOGIN_IPS = 1000;
-const STATUSES = new Set(['open', 'in_progress', 'waiting', 'resolved', 'closed']);
-const PRIORITIES = new Set(['low', 'normal', 'high', 'urgent']);
-const CATEGORIES = new Set(['general', 'hardware', 'software', 'network', 'access']);
 const VIEWS = new Set(['all', 'open', 'my', 'unassigned', 'overdue', 'resolved']);
 
 function invalid(message, statusCode = 400) {
@@ -129,6 +127,8 @@ export function createDeskRouter({ desk, store, worker, config, workspace }) {
   router.use('/knowledge', createKnowledgeRouter({ workspace, config }));
   router.use('/assets', createAssetsRouter({ workspace }));
   router.use('/reports', createReportsRouter({ desk, workspace }));
+  router.use('/settings', createSettingsRouter({ desk }));
+  router.get('/workflow', (_req, res) => res.json(desk.settings.snapshot()));
 
   router.get('/session', (req, res) => res.json(sessionBody(req.deskSession)));
   router.post('/logout', (req, res) => {
@@ -193,9 +193,9 @@ export function createDeskRouter({ desk, store, worker, config, workspace }) {
       filters[name] = scalarQuery(req.query[name], name);
     }
     if (filters.view && !VIEWS.has(filters.view)) throw invalid('Invalid ticket view.');
-    if (filters.status && !STATUSES.has(filters.status)) throw invalid('Invalid status filter.');
-    if (filters.priority && !PRIORITIES.has(filters.priority)) throw invalid('Invalid priority filter.');
-    if (filters.category && !CATEGORIES.has(filters.category)) throw invalid('Invalid category filter.');
+    for (const [field, type] of [['status', 'statuses'], ['priority', 'priorities'], ['category', 'categories']]) {
+      if (filters[field] && !desk.settings.get(type, filters[field])) throw invalid(`Invalid ${field} filter.`);
+    }
     if (filters.view === 'my') {
       filters.assignee = req.deskSession.user.id;
       filters.view = 'all';
@@ -219,11 +219,11 @@ export function createDeskRouter({ desk, store, worker, config, workspace }) {
     if (typeof subject !== 'string' || !subject.trim() || subject.length > 240 || /[\x00-\x1f\x7f]/.test(subject)
       || typeof requester !== 'string' || requester.length > 254 || !/^[^\s<>\x00-\x1f@]+@[^\s<>\x00-\x1f@]+\.[^\s<>\x00-\x1f@]+$/.test(requester)
       || typeof description !== 'string' || !description.trim() || description.length > 100_000
-      || (body.requester_name !== undefined && (typeof body.requester_name !== 'string' || body.requester_name.length > 200 || /[\x00-\x1f\x7f]/.test(body.requester_name)))
-      || (body.priority !== undefined && !PRIORITIES.has(body.priority))
-      || (body.category !== undefined && !CATEGORIES.has(body.category))) {
+      || (body.requester_name !== undefined && (typeof body.requester_name !== 'string' || body.requester_name.length > 200 || /[\x00-\x1f\x7f]/.test(body.requester_name)))) {
       throw invalid('Provide a subject, valid requester email, description, and valid ticket fields.');
     }
+    if (body.priority !== undefined) desk.settings.validateChoice('priorities', body.priority);
+    if (body.category !== undefined) desk.settings.validateChoice('categories', body.category);
     if (body.assignee_id !== undefined && body.assignee_id !== null
       && (typeof body.assignee_id !== 'string' || !desk.listTechnicians().some(user => user.id === body.assignee_id && user.active))) {
       throw invalid('Choose an active technician.');

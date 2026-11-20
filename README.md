@@ -44,9 +44,9 @@ Tickets are saved locally and open immediately. Set General/Hardware/Software/Ne
 
 Response templates support `{{requester}}`, `{{technician}}`, `{{ticket_id}}`, and `{{subject}}`. Insert one into an internal note or copy it for your mail client. These actions do not send email. Mark first response only after contacting the requester; it records that action rather than sending a reply.
 
-Use **Tags** on any ticket to add labels such as `VIP`, `needs approval`, or `onboarding`. Type a new tag and press **Enter** to save it immediately, or reuse an existing suggestion. Remove a tag with its remove button. Tags can also be entered while creating a ticket. Names are case-insensitive, allow up to 50 characters, and support up to 25 distinct tags per ticket; changing tags records an activity entry.
+Use **Tags** on any ticket to add labels such as `VIP`, `needs approval`, or `onboarding`. Type a new tag and press **Enter** to save it immediately, or reuse an existing suggestion. Remove a tag with its remove button. Tags can also be entered while creating a ticket. Names are case-insensitive and allow up to 50 characters. There is no per-ticket tag-count limit; changing tags records an activity entry.
 
-Response and resolution indicators use elapsed wall-clock time from original ticket acceptance:
+Response and resolution indicators use elapsed wall-clock time from original ticket acceptance. These default targets can be edited in Settings:
 
 | Priority | First response | Resolution |
 | --- | --- | --- |
@@ -90,6 +90,14 @@ Select **Reports**, immediately below Actions, to search ticket history. Combine
 Select **Search tickets** to apply the filters. Results show the matching count, support sorting and pagination, and open the existing ticket details. **Export CSV** downloads every matching ticket using the applied search, including results on other pages. Unsubmitted filter edits do not change the export. CSV files use UTF-8, preserve quoted/multiline text, and neutralize spreadsheet formulas in ticket content. Asset filters, counts, and exported details follow the signed-in user's category permissions.
 
 The **Tag** filter matches one complete tag, ignoring case and extra spaces. The general search also finds partial tag names. Report results display ticket tags, and CSV exports include a **Tags** column.
+
+## Settings
+
+Administrators use **Settings** to manage ticket statuses, priorities and SLA targets, ticket categories, and technician accounts. Knowledge categories and their permissions are also accessible from this area. Team remains available for technician management.
+
+Create custom priorities with an urgency rank and response/resolution targets in hours, including fractional hours. Larger ranks appear first when sorting by priority. Editing a target preserves existing ticket deadlines by default. Select **Apply SLA changes to active tickets** to recalculate deadlines for active tickets using that priority, anchored to their original submission time; completed tickets retain their deadlines.
+
+Custom statuses have an Active, Resolved, or Closed behavior. This behavior controls dashboards, overdue checks, required resolution summaries, and reply reopening. Behavior is fixed after creation; display names can be edited. Custom statuses, priorities, and categories can be archived to stop new assignments while retaining their names and history in tickets, Reports, and CSV exports. Default options remain available for email intake. Settings changes require administrator access and reject stale saves instead of replacing another administrator's changes.
 
 ## Upgrade and optional legacy import
 

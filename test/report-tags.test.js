@@ -44,12 +44,12 @@ test('Reports searches normalized tags, combines exact tag filters and exports t
   assert.equal(partial.status, 200); assert.equal(partial.body.total, 2);
   assert.equal((await h.request('/reports/tickets', { tag: 'review' })).body.total, 0, 'A dedicated tag filter matches the whole tag');
   const csv = await h.request('/reports/tickets.csv', { tag: 'café, review' });
-  assert.equal(csv.status, 200); assert.match(csv.body, /"Tags"\r\n/);
-  assert.match(csv.body, /"Café, review"\r\n/); assert.ok(csv.body.includes('HD-TAG-EXACT'));
+  assert.equal(csv.status, 200); assert.match(csv.body, /"Tags"(?:,|\r\n)/);
+  assert.match(csv.body, /"Café, review"(?:,|\r\n)/); assert.ok(csv.body.includes('HD-TAG-EXACT'));
   assert.ok(!csv.body.includes('HD-TAG-PREFIX'));
   h.ticket('HD-TAG-FORMULA', ['=SUM(1,2)']);
   const formula = await h.request('/reports/tickets.csv', { tag: '=SUM(1,2)' });
-  assert.equal(formula.status, 200); assert.match(formula.body, /"'=SUM\(1,2\)"\r\n/);
+  assert.equal(formula.status, 200); assert.match(formula.body, /"'=SUM\(1,2\)"(?:,|\r\n)/);
   assert.equal((await h.request('/reports/tickets', { tag: 'x'.repeat(51) })).status, 400);
 });
 

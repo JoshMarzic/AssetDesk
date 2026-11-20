@@ -1,19 +1,9 @@
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
+import { WorkflowSettings } from './workflow-settings.js';
 
 const derive = promisify(scrypt);
-const STATUSES = ['open', 'in_progress', 'waiting', 'resolved', 'closed'];
-const PRIORITIES = ['low', 'normal', 'high', 'urgent'];
-const CATEGORIES = ['general', 'hardware', 'software', 'network', 'access'];
 export const SLA_HOURS = Object.freeze({ low: { response: 24, resolution: 120 }, normal: { response: 8, resolution: 72 }, high: { response: 2, resolution: 24 }, urgent: { response: 1, resolution: 8 } });
-const ACTIVE = ['open', 'in_progress', 'waiting'];
-const TRANSITIONS = {
-  open: ['in_progress', 'waiting', 'resolved'],
-  in_progress: ['open', 'waiting', 'resolved'],
-  waiting: ['open', 'in_progress', 'resolved'],
-  resolved: ['open', 'in_progress', 'closed'],
-  closed: ['open'],
-};
 const now = () => new Date().toISOString();
 const digest = token => createHash('sha256').update(String(token)).digest('hex');
 const safeUser = user => user ? { id: user.id, name: user.name, email: user.email, role: user.role, active: Boolean(user.active) } : null;
@@ -31,7 +21,7 @@ export function normalizeTicketTag(value) {
   return { name, normalized: name.toLowerCase() };
 }
 export function normalizeTicketTags(values) {
-  if (!Array.isArray(values) || values.length > 25) throw error('Provide a list of at most 25 tags.');
+  if (!Array.isArray(values)) throw error('Provide a list of tags.');
   const unique = new Map();
   for (const value of values) { const tag = normalizeTicketTag(value); if (!unique.has(tag.normalized)) unique.set(tag.normalized, tag.name); }
   return [...unique.values()];
@@ -54,11 +44,6 @@ async function hashPassword(value) {
   const hash = await derive(password(value), salt, 64);
   return `scrypt$${salt}$${hash.toString('hex')}`;
 }
-function sla(created, priority) {
-  const start = Date.parse(created);
-  return { response_due_at: new Date(start + SLA_HOURS[priority].response * 3600000).toISOString(), resolution_due_at: new Date(start + SLA_HOURS[priority].resolution * 3600000).toISOString() };
-}
-
 /** Persistent ticket workflow, users, and sessions layered onto the existing queue. */
 export class DeskStore {
   constructor(store) {
@@ -143,9 +128,10 @@ export class DeskStore {
           if (earliest < Date.parse(ticket.created_at)) this.db.prepare('UPDATE tickets SET created_at=? WHERE key=?').run(new Date(earliest).toISOString(), ticket.key);
         }
       }
-      this.initializeRows();
       this.db.exec('COMMIT');
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }
+    this.settings = new WorkflowSettings(this.db);
+    this.initializeRows();
     // Legacy queue payloads retain the original message; populate existing tickets without replacing page content.
     for (const row of this.db.prepare(`SELECT m.id,m.ticket_key,m.payload FROM messages m
       LEFT JOIN desk_receipts d ON d.receipt_id=m.id
@@ -161,7 +147,7 @@ export class DeskStore {
 
   initializeRows() {
     for (const row of this.db.prepare('SELECT key,created_at,priority FROM tickets WHERE updated_at IS NULL OR response_due_at IS NULL OR resolution_due_at IS NULL').all()) {
-      const due = sla(row.created_at, row.priority);
+      const due = this.settings.sla(row.created_at, row.priority);
       this.db.prepare('UPDATE tickets SET updated_at=COALESCE(updated_at,created_at),response_due_at=COALESCE(response_due_at,?),resolution_due_at=COALESCE(resolution_due_at,?) WHERE key=?')
         .run(due.response_due_at, due.resolution_due_at, row.key);
     }
@@ -239,11 +225,14 @@ export class DeskStore {
 
   decorate(row) {
     if (!row) return null;
-    const active = ACTIVE.includes(row.status), timestamp = Date.now();
+    const active = this.settings.isActiveStatus(row.status), timestamp = Date.now();
     const responseOverdue = active && !row.first_response_at && Date.parse(row.response_due_at) < timestamp;
     const resolutionOverdue = active && Date.parse(row.resolution_due_at) < timestamp;
     const { page_id, page_url, ...native } = row;
     return { ...native, tags: this.ticketTags(row.key), assignee: row.assignee_id ? this.user(row.assignee_id) : null,
+      status_kind: this.settings.statusKind(row.status), status_name: this.settings.get('statuses', row.status)?.name || row.status,
+      priority_rank: this.settings.get('priorities', row.priority)?.rank || 0, priority_name: this.settings.get('priorities', row.priority)?.name || row.priority,
+      category_name: this.settings.get('categories', row.category)?.name || row.category,
       is_overdue: responseOverdue || resolutionOverdue, response_overdue: responseOverdue,
       resolution_overdue: resolutionOverdue };
   }
@@ -258,9 +247,9 @@ export class DeskStore {
   listTickets({ search = '', status, priority, assignee, category, view, sort = 'newest', limit = 100, offset = 0 } = {}) {
     this.initializeRows();
     const clauses = [], args = [];
-    for (const [field, value, options] of [['status', status, STATUSES], ['priority', priority, PRIORITIES], ['category', category, CATEGORIES]]) {
+    for (const [field, value, type] of [['status', status, 'statuses'], ['priority', priority, 'priorities'], ['category', category, 'categories']]) {
       if (!value || value === 'all') continue;
-      if (!options.includes(value)) throw error(`Invalid ${field} filter.`);
+      if (!this.settings.get(type, value)) throw error(`Invalid ${field} filter.`);
       clauses.push(`${field}=?`); args.push(value);
     }
     if (search) {
@@ -270,18 +259,18 @@ export class DeskStore {
     }
     if (assignee === 'unassigned') clauses.push('assignee_id IS NULL');
     else if (assignee && assignee !== 'all') { clauses.push('assignee_id=?'); args.push(assignee); }
-    if (view === 'open') clauses.push("status IN ('open','in_progress','waiting')");
-    else if (view === 'unassigned') clauses.push("assignee_id IS NULL AND status IN ('open','in_progress','waiting')");
-    else if (view === 'overdue') { clauses.push("status IN ('open','in_progress','waiting') AND (resolution_due_at<? OR (first_response_at IS NULL AND response_due_at<?))"); args.push(now(), now()); }
-    else if (view === 'resolved') clauses.push("status IN ('resolved','closed')");
+    if (view === 'open') clauses.push("status IN (SELECT id FROM ticket_statuses WHERE kind='active')");
+    else if (view === 'unassigned') clauses.push("assignee_id IS NULL AND status IN (SELECT id FROM ticket_statuses WHERE kind='active')");
+    else if (view === 'overdue') { clauses.push("status IN (SELECT id FROM ticket_statuses WHERE kind='active') AND (resolution_due_at<? OR (first_response_at IS NULL AND response_due_at<?))"); args.push(now(), now()); }
+    else if (view === 'resolved') clauses.push("status IN (SELECT id FROM ticket_statuses WHERE kind IN ('resolved','closed'))");
     else if (view && view !== 'all') throw error('Invalid ticket view.');
     const count = Number(limit), start = Number(offset);
     if (!Number.isInteger(count) || count < 1 || count > 200 || !Number.isInteger(start) || start < 0) throw error('Invalid pagination.');
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const sorts = {
       newest: 'created_at DESC,key', oldest: 'created_at ASC,key',
-      priority: "CASE status WHEN 'closed' THEN 2 WHEN 'resolved' THEN 1 ELSE 0 END,CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,created_at DESC,key",
-      due: "CASE status WHEN 'closed' THEN 2 WHEN 'resolved' THEN 1 ELSE 0 END,CASE WHEN first_response_at IS NULL AND response_due_at<resolution_due_at THEN response_due_at ELSE resolution_due_at END ASC,key",
+      priority: "CASE (SELECT kind FROM ticket_statuses s WHERE s.id=tickets.status) WHEN 'closed' THEN 2 WHEN 'resolved' THEN 1 ELSE 0 END,COALESCE((SELECT rank FROM ticket_priorities p WHERE p.id=tickets.priority),0) DESC,created_at DESC,key",
+      due: "CASE (SELECT kind FROM ticket_statuses s WHERE s.id=tickets.status) WHEN 'closed' THEN 2 WHEN 'resolved' THEN 1 ELSE 0 END,CASE WHEN first_response_at IS NULL AND response_due_at<resolution_due_at THEN response_due_at ELSE resolution_due_at END ASC,key",
     };
     if (!Object.hasOwn(sorts, sort)) throw error('Invalid ticket sort.');
     const total = this.db.prepare(`SELECT COUNT(*) AS count FROM tickets ${where}`).get(...args).count;
@@ -307,7 +296,6 @@ export class DeskStore {
     return this.transaction(() => {
       if (!this.db.prepare('SELECT 1 FROM tickets WHERE key=?').get(key)) throw error('Ticket not found.', 404);
       if (this.db.prepare('SELECT 1 FROM ticket_tags WHERE ticket_key=? AND normalized=?').get(key, tag.normalized)) return this.getTicket(key);
-      if (this.db.prepare('SELECT COUNT(*) AS count FROM ticket_tags WHERE ticket_key=?').get(key).count >= 25) throw error('A ticket can have at most 25 tags.');
       const name = this.db.prepare('SELECT name FROM ticket_tags WHERE normalized=? ORDER BY created_at,ticket_key LIMIT 1').get(tag.normalized)?.name || tag.name;
       this.db.prepare('INSERT INTO ticket_tags(ticket_key,normalized,name,created_at,actor_id) VALUES (?,?,?,?,?)').run(key, tag.normalized, name, now(), actor?.id || null);
       this.db.prepare('UPDATE tickets SET updated_at=?,version=version+1 WHERE key=?').run(now(), key);
@@ -336,8 +324,11 @@ export class DeskStore {
       if (!row) throw error('Ticket not found.', 404);
       if (!Number.isInteger(version) || row.version !== version) throw error('This ticket changed. Refresh it before saving.', 409);
       const values = { ...row };
-      for (const [field, options] of [['status', STATUSES], ['priority', PRIORITIES], ['category', CATEGORIES]]) {
-        if (patch[field] !== undefined) { if (!options.includes(patch[field])) throw error(`Invalid ${field}.`); values[field] = patch[field]; }
+      for (const [field, type] of [['status', 'statuses'], ['priority', 'priorities'], ['category', 'categories']]) {
+        if (patch[field] !== undefined) {
+          this.settings.validateChoice(type, patch[field], { allowInactiveId: row[field] });
+          values[field] = patch[field];
+        }
       }
       if (patch.subject !== undefined) values.subject = text(patch.subject, 'Subject', 240);
       if (patch.assignee_id !== undefined) {
@@ -346,14 +337,16 @@ export class DeskStore {
       }
       if (patch.resolution !== undefined) values.resolution = text(patch.resolution, 'Resolution', 10000, { empty: true });
       if (values.status !== row.status) {
-        if (!TRANSITIONS[row.status].includes(values.status)) throw error('That ticket status transition is not allowed.');
-        if (values.status === 'resolved' && !values.resolution.trim()) throw error('Add a resolution summary before resolving this ticket.');
-        if (values.status === 'resolved') values.resolved_at = now();
-        else if (ACTIVE.includes(values.status)) values.resolved_at = null;
+        const fromKind = this.settings.statusKind(row.status), toKind = this.settings.statusKind(values.status);
+        if ((fromKind === 'active' && toKind === 'closed') || (fromKind === 'closed' && toKind === 'resolved')) throw error('That ticket status transition is not allowed.');
+        if (toKind !== 'active' && !values.resolution.trim()) throw error('Add a resolution summary before resolving or closing this ticket.');
+        if (toKind === 'resolved') values.resolved_at = fromKind === 'resolved' ? row.resolved_at || now() : now();
+        else if (toKind === 'active') values.resolved_at = null;
       }
+      if (patch.resolution !== undefined && !this.settings.isActiveStatus(values.status) && !values.resolution.trim()) throw error('Add a resolution summary before resolving or closing this ticket.');
       if (patch.first_response !== undefined && patch.first_response !== true) throw error('First response can only be marked complete.');
       if (patch.first_response === true && !row.first_response_at) values.first_response_at = now();
-      if (values.priority !== row.priority) Object.assign(values, sla(row.created_at, values.priority));
+      if (values.priority !== row.priority) Object.assign(values, this.settings.sla(row.created_at, values.priority));
       this.db.prepare(`UPDATE tickets SET subject=?,status=?,priority=?,category=?,assignee_id=?,resolution=?,resolved_at=?,first_response_at=?,response_due_at=?,resolution_due_at=?,updated_at=?,version=version+1 WHERE key=?`)
         .run(values.subject, values.status, values.priority, values.category, values.assignee_id, values.resolution, values.resolved_at, values.first_response_at, values.response_due_at, values.resolution_due_at, now(), key);
       for (const field of ['subject', 'status', 'priority', 'category', 'assignee_id']) {
@@ -405,9 +398,10 @@ export class DeskStore {
         if (original.version === 1) {
           const priority = message.desk?.priority ?? 'normal';
           const category = message.desk?.category ?? 'general';
-          if (!PRIORITIES.includes(priority) || !CATEGORIES.includes(category)) throw error('Invalid initial ticket priority or category.');
+          this.settings.validateChoice('priorities', priority);
+          this.settings.validateChoice('categories', category);
           initialAssignee = message.desk?.assignee_id && this.user(message.desk.assignee_id)?.active ? message.desk.assignee_id : null;
-          const due = sla(original.created_at, priority);
+          const due = this.settings.sla(original.created_at, priority);
           this.db.prepare('UPDATE tickets SET priority=?,category=?,assignee_id=?,response_due_at=?,resolution_due_at=? WHERE key=?')
             .run(priority, category, initialAssignee, due.response_due_at, due.resolution_due_at, key);
         }
@@ -418,7 +412,7 @@ export class DeskStore {
         const sender = message.from?.name ? `${message.from.name} (${message.from.address})` : message.from?.address || 'Requester';
         this.db.prepare('INSERT INTO ticket_notes (id,ticket_key,body,kind,actor_id,actor_name,created_at) VALUES (?,?,?,?,?,?,?)').run(randomUUID(), key, body, 'email', null, sender, message.receivedAt || now());
         const row = this.db.prepare('SELECT status FROM tickets WHERE key=?').get(key);
-        if (!migrate && reopen && ['resolved', 'closed'].includes(row.status)) {
+        if (!migrate && reopen && !this.settings.isActiveStatus(row.status)) {
           this.db.prepare("UPDATE tickets SET status='open',resolved_at=NULL WHERE key=?").run(key);
           this.event(key, 'status', 'Reopened by an email reply', { name: sender });
         }
@@ -453,23 +447,23 @@ export class DeskStore {
     this.initializeRows();
     const timestamp = now(), midnight = new Date(); midnight.setUTCHours(0, 0, 0, 0);
     const count = (where = '', values = []) => this.db.prepare(`SELECT COUNT(*) AS count FROM tickets ${where ? `WHERE ${where}` : ''}`).get(...values).count;
-    const active = "status IN ('open','in_progress','waiting')";
+    const active = "status IN (SELECT id FROM ticket_statuses WHERE kind='active')";
     const counts = {
         total: count(), active: count(active), unassigned: count(`${active} AND assignee_id IS NULL`),
         overdue: count(`${active} AND (resolution_due_at<? OR (first_response_at IS NULL AND response_due_at<?))`, [timestamp, timestamp]),
-        awaitingResponse: count(`${active} AND first_response_at IS NULL`), resolvedToday: count("status IN ('resolved','closed') AND resolved_at>=?", [midnight.toISOString()]),
+        awaitingResponse: count(`${active} AND first_response_at IS NULL`), resolvedToday: count("status IN (SELECT id FROM ticket_statuses WHERE kind IN ('resolved','closed')) AND resolved_at>=?", [midnight.toISOString()]),
       };
     const activity = this.db.prepare(`SELECT e.*,t.subject AS ticket_subject FROM ticket_events e JOIN tickets t ON t.key=e.ticket_key ORDER BY e.created_at DESC,e.rowid DESC LIMIT 12`).all();
     return {
-      stats: { ...counts, open: counts.active }, counts,
+      stats: { ...counts, open: counts.active }, counts, workflow: this.settings.snapshot(),
       statusCounts: this.db.prepare('SELECT status,COUNT(*) AS count FROM tickets GROUP BY status').all(),
       priorityCounts: this.db.prepare(`SELECT priority,COUNT(*) AS count FROM tickets WHERE ${active} GROUP BY priority`).all(),
       workload: this.db.prepare(`SELECT u.id,u.name,u.email,COUNT(t.key) AS active_tickets,
         SUM(CASE WHEN t.resolution_due_at<? OR (t.first_response_at IS NULL AND t.response_due_at<?) THEN 1 ELSE 0 END) AS overdue_tickets
-        FROM technicians u LEFT JOIN tickets t ON t.assignee_id=u.id AND t.status IN ('open','in_progress','waiting')
+        FROM technicians u LEFT JOIN tickets t ON t.assignee_id=u.id AND t.status IN (SELECT id FROM ticket_statuses WHERE kind='active')
         WHERE u.active=1 GROUP BY u.id ORDER BY active_tickets DESC,u.name`).all(timestamp, timestamp),
       activity, recentActivity: activity,
-      sla: { targetsHours: SLA_HOURS, mode: 'elapsed', dayBoundary: 'UTC' },
+      sla: { targetsHours: Object.fromEntries(this.settings.snapshot().priorities.map(priority => [priority.id, { response: priority.response_hours, resolution: priority.resolution_hours }])), mode: 'elapsed', dayBoundary: 'UTC' },
     };
   }
 }

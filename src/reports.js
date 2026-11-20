@@ -4,9 +4,6 @@ import { ASSET_TYPES } from './workspace-store.js';
 import { normalizeTicketTag } from './desk-store.js';
 
 const ENUMS = Object.freeze({
-  status: ['open', 'in_progress', 'waiting', 'resolved', 'closed'],
-  priority: ['low', 'normal', 'high', 'urgent'],
-  category: ['general', 'hardware', 'software', 'network', 'access'],
   source: ['email', 'manual'], asset_type: ASSET_TYPES, has_assets: ['yes', 'no'],
   date_field: ['created_at', 'updated_at', 'first_response_at', 'resolved_at', 'response_due_at', 'resolution_due_at'],
   response_state: ['recorded', 'unrecorded'], resolution_state: ['recorded', 'unrecorded'],
@@ -15,10 +12,11 @@ const ENUMS = Object.freeze({
 });
 const TEXT_FILTERS = ['search', 'ticket_key', 'subject', 'description', 'requester', 'resolution', 'note', 'asset', 'tag'];
 const NUMBER_FILTERS = ['response_minutes', 'resolution_minutes', 'note_count', 'email_count', 'asset_count'];
-const ALLOWED = new Set([...TEXT_FILTERS, ...Object.keys(ENUMS), 'assignee', 'date_from', 'date_to', 'limit', 'offset', ...NUMBER_FILTERS.flatMap(name => [`${name}_min`, `${name}_max`])]);
+const CHOICES = { status: 'statuses', priority: 'priorities', category: 'categories' };
+const ALLOWED = new Set([...TEXT_FILTERS, ...Object.keys(ENUMS), ...Object.keys(CHOICES), 'assignee', 'date_from', 'date_to', 'limit', 'offset', ...NUMBER_FILTERS.flatMap(name => [`${name}_min`, `${name}_max`])]);
 const SORTS = Object.freeze({
   newest: 'r.created_at DESC,r.key', oldest: 'r.created_at ASC,r.key', updated: 'r.updated_at DESC,r.key',
-  priority: "CASE r.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,r.created_at DESC,r.key",
+  priority: 'r.priority_rank DESC,r.created_at DESC,r.key',
   due: 'CASE WHEN r.first_response_at IS NULL AND r.response_due_at<r.resolution_due_at THEN r.response_due_at ELSE r.resolution_due_at END ASC,r.key',
   requester: 'r.requester COLLATE NOCASE,r.key',
 });
@@ -33,14 +31,17 @@ function date(value, name) {
   return parsed;
 }
 
-export function reportFilters(query) {
+export function reportFilters(query, workflow) {
   const filters = { date_field: 'created_at', sort: 'newest', limit: 25, offset: 0 };
   for (const [name, input] of Object.entries(query)) {
     if (!ALLOWED.has(name)) throw invalid(`Unsupported report filter: ${name}.`);
     if (typeof input !== 'string' || input.length > 500 || /[\x00-\x1f\x7f]/.test(input)) throw invalid(`Invalid ${name} filter.`);
     const value = input.trim();
     if (!value) continue;
-    if (ENUMS[name]) {
+    if (CHOICES[name]) {
+      if (!workflow?.[CHOICES[name]]?.some(option => option.id === value)) throw invalid(`Invalid ${name} filter.`);
+      filters[name] = value;
+    } else if (ENUMS[name]) {
       if (!ENUMS[name].includes(value)) throw invalid(`Invalid ${name} filter.`);
       filters[name] = value;
     } else if (name === 'limit' || name === 'offset') {
@@ -75,15 +76,19 @@ function queryReport(workspace, user, filters, timestamp) {
   note_counts AS (SELECT ticket_key,SUM(kind='note') AS note_count,SUM(kind='email') AS email_count FROM ticket_notes GROUP BY ticket_key),
   clock AS (SELECT ? AS timestamp), report_rows AS (
     SELECT t.*,u.name AS assigned_name,u.email AS assigned_email,u.role AS assigned_role,u.active AS assigned_active,
+      COALESCE(s.kind,'active') AS status_kind,COALESCE(p.rank,0) AS priority_rank,
+      COALESCE(s.name,t.status) AS status_name,COALESCE(p.name,t.priority) AS priority_name,COALESCE(tc.name,t.category) AS category_name,
       COALESCE(ac.asset_count,0) AS asset_count,COALESCE(nc.note_count,0) AS note_count,COALESCE(nc.email_count,0) AS email_count,
       CASE WHEN t.first_response_at IS NOT NULL THEN ROUND((julianday(t.first_response_at)-julianday(t.created_at))*1440,4) END AS response_minutes,
       CASE WHEN t.resolved_at IS NOT NULL THEN ROUND((julianday(t.resolved_at)-julianday(t.created_at))*1440,4) END AS resolution_minutes,
       CASE WHEN t.first_response_at IS NOT NULL THEN CASE WHEN julianday(t.first_response_at)<=julianday(t.response_due_at) THEN 'met' ELSE 'breached' END
-        WHEN t.status IN ('open','in_progress','waiting') AND julianday(t.response_due_at)<julianday(clock.timestamp) THEN 'overdue' ELSE 'pending' END AS response_sla,
+        WHEN COALESCE(s.kind,'active')='active' AND julianday(t.response_due_at)<julianday(clock.timestamp) THEN 'overdue' ELSE 'pending' END AS response_sla,
       CASE WHEN t.resolved_at IS NOT NULL THEN CASE WHEN julianday(t.resolved_at)<=julianday(t.resolution_due_at) THEN 'met' ELSE 'breached' END
-        WHEN t.status IN ('open','in_progress','waiting') AND julianday(t.resolution_due_at)<julianday(clock.timestamp) THEN 'overdue' ELSE 'pending' END AS resolution_sla
+        WHEN COALESCE(s.kind,'active')='active' AND julianday(t.resolution_due_at)<julianday(clock.timestamp) THEN 'overdue' ELSE 'pending' END AS resolution_sla
     FROM tickets t LEFT JOIN technicians u ON u.id=t.assignee_id LEFT JOIN asset_counts ac ON ac.ticket_key=t.key
-      LEFT JOIN note_counts nc ON nc.ticket_key=t.key CROSS JOIN clock
+      LEFT JOIN note_counts nc ON nc.ticket_key=t.key
+      LEFT JOIN ticket_statuses s ON s.id=t.status LEFT JOIN ticket_priorities p ON p.id=t.priority
+      LEFT JOIN ticket_categories tc ON tc.id=t.category CROSS JOIN clock
   )`;
   const args = [...access.args, timestamp], clauses = [];
   for (const name of ['status', 'priority', 'category', 'source', 'response_sla', 'resolution_sla']) if (filters[name]) { clauses.push(`r.${name}=?`); args.push(filters[name]); }
@@ -139,6 +144,7 @@ const CSV_COLUMNS = [
   ['Linked assets', t => t.assets.map(a => a.ref).join('; ')], ['Asset names', t => t.assets.map(a => a.name).join('; ')],
   ['Asset types', t => t.assets.map(a => a.type).join('; ')], ['Visible asset count', t => t.asset_count],
   ['Tags', t => t.tags.join('; ')],
+  ['Status name', t => t.status_name], ['Priority name', t => t.priority_name], ['Category name', t => t.category_name],
 ];
 
 export function csvCell(input) {
@@ -152,9 +158,9 @@ const csvRow = values => values.map(csvCell).join(',') + '\r\n';
 
 export function createReportsRouter({ desk, workspace }) {
   const router = express.Router();
-  router.get('/options', (_req, res) => res.json({ technicians: desk.listTechnicians(), date_fields: ENUMS.date_field }));
+  router.get('/options', (_req, res) => res.json({ technicians: desk.listTechnicians(), date_fields: ENUMS.date_field, workflow: desk.settings.snapshot() }));
   router.get('/tickets', (req, res) => {
-    const filters = reportFilters(req.query);
+    const filters = reportFilters(req.query, desk.settings.snapshot());
     desk.initializeRows();
     const query = queryReport(workspace, req.deskSession.user, filters, new Date().toISOString());
     const total = desk.db.prepare(`${query.cte} SELECT COUNT(*) AS total ${query.select}`).get(...query.args).total;
@@ -168,7 +174,7 @@ export function createReportsRouter({ desk, workspace }) {
     const disconnected = () => controller.abort();
     res.once('close', disconnected);
     try {
-      const filters = reportFilters(req.query);
+      const filters = reportFilters(req.query, desk.settings.snapshot());
       desk.initializeRows();
       const query = queryReport(workspace, req.deskSession.user, filters, new Date().toISOString());
       const statement = desk.db.prepare(`${query.cte} SELECT r.* ${query.select} ORDER BY ${query.order}`);
