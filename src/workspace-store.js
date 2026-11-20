@@ -244,16 +244,36 @@ export class WorkspaceStore {
   }
   listAssets(user, filters = {}) {
     const access = this.readableClause('c', user), page = pagination(filters), clauses = [access.sql], args = [...access.args];
+    let types = [];
+    if (filters.types !== undefined && filters.types !== '') {
+      if (typeof filters.types !== 'string' || filters.types.length > 100) throw fail('Invalid asset types.');
+      types = [...new Set(filters.types.split(',').map(type => type.trim()))];
+      if (!types.length || types.some(type => !ASSET_TYPES.includes(type))) throw fail('Invalid asset types.');
+    }
+    if (filters.type && filters.type !== 'all') {
+      if (!ASSET_TYPES.includes(filters.type)) throw fail('Invalid asset type.');
+      if (types.length) throw fail('Use either one asset type or a list of asset types.');
+      types = [filters.type];
+    }
+    if (filters.sort !== undefined && filters.sort !== '' && filters.sort !== 'type') throw fail('Invalid asset sort.');
     if (filters.category_id) { this.getCategory(filters.category_id, user); clauses.push('a.category_id=?'); args.push(filters.category_id); }
-    if (filters.type && filters.type !== 'all') { if (!ASSET_TYPES.includes(filters.type)) throw fail('Invalid asset type.'); clauses.push('a.type=?'); args.push(filters.type); }
     if (filters.search) {
       const term = likeTerm(filters.search); clauses.push("(a.ref LIKE ? ESCAPE '\\' OR a.name LIKE ? ESCAPE '\\' OR a.serial_number LIKE ? ESCAPE '\\' OR a.email LIKE ? ESCAPE '\\')");
       args.push(...Array(4).fill(`%${term}%`));
     }
+    // Facets share the readable/search/category constraints but remain useful
+    // when another type is selected. Restricted records never enter the count.
+    const type_counts = Object.fromEntries(ASSET_TYPES.map(type => [type, 0]));
+    for (const row of this.db.prepare(`SELECT a.type,COUNT(*) AS count FROM native_assets a JOIN knowledge_categories c ON c.id=a.category_id WHERE ${clauses.join(' AND ')} GROUP BY a.type`).all(...args)) {
+      if (Object.hasOwn(type_counts, row.type)) type_counts[row.type] = row.count;
+    }
+    if (types.length) { clauses.push(`a.type IN (${types.map(() => '?').join(',')})`); args.push(...types); }
     const where = clauses.join(' AND ');
     const total = this.db.prepare(`SELECT COUNT(*) AS count FROM native_assets a JOIN knowledge_categories c ON c.id=a.category_id WHERE ${where}`).get(...args).count;
-    const rows = this.db.prepare(`SELECT a.* FROM native_assets a JOIN knowledge_categories c ON c.id=a.category_id WHERE ${where} ORDER BY a.updated_at DESC,a.ref LIMIT ? OFFSET ?`).all(...args, page.limit, page.offset);
-    return { assets: rows.map(row => this.assetResult(row, user)), total, ...page };
+    const grouped = filters.sort === 'type';
+    const order = grouped ? `CASE a.type ${ASSET_TYPES.map((_type, index) => `WHEN ? THEN ${index}`).join(' ')} ELSE ${ASSET_TYPES.length} END,a.ref COLLATE NOCASE,a.id` : 'a.updated_at DESC,a.ref';
+    const rows = this.db.prepare(`SELECT a.* FROM native_assets a JOIN knowledge_categories c ON c.id=a.category_id WHERE ${where} ORDER BY ${order} LIMIT ? OFFSET ?`).all(...args, ...(grouped ? ASSET_TYPES : []), page.limit, page.offset);
+    return { assets: rows.map(row => this.assetResult(row, user)), total, type_counts, ...page };
   }
   getAsset(idOrRef, user) {
     auth(user);

@@ -6,7 +6,7 @@ const ASSET_FIELDS = ['ref','name','type','category_id','owner_id','owner_name',
 export function createAssetsRouter({ workspace }) {
   const router = express.Router();
   const user = req => req.deskSession.user;
-  router.get('/', (req, res) => res.json(workspace.listAssets(user(req), listFilters(req.query, ['type']))));
+  router.get('/', (req, res) => res.json(workspace.listAssets(user(req), listFilters(req.query, ['type', 'types', 'sort']))));
   router.post('/', (req, res) => {
     bodyFields(req.body, ASSET_FIELDS);
     res.status(201).json(workspace.createAsset(req.body, user(req)));
