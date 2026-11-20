@@ -1,5 +1,6 @@
 import express from 'express';
 import { ACTION_TYPES } from './actions-store.js';
+import { createWorkflowsRouter } from './workflows-routes.js';
 
 const RUN_STATUSES = new Set(['queued', 'running', 'waiting_approval', 'waiting_task', 'waiting_delay', 'completed', 'rejected', 'cancelled', 'failed', 'blocked', 'needs_attention']);
 const invalid = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode, safeMessage: message });
@@ -35,10 +36,15 @@ function wake(runner) {
 }
 
 /** Authenticated Actions API; the parent router enforces session and CSRF. */
-export function createActionsRouter({ actions, runner, transports }) {
+export function createActionsRouter({ actions, runner, transports, workflows }) {
   const router = express.Router();
   router.use((req, res, next) => req.deskSession?.user ? next() : res.status(401).json({ error: 'Sign in to continue.' }));
   const user = req => req.deskSession.user;
+  const runResult = (run, req) => {
+    const composition = workflows?.getRunComposition(run.id, user(req));
+    return composition ? { ...run, workflow: composition } : run;
+  };
+  if (workflows) router.use('/workflows', createWorkflowsRouter({ workflows, runner }));
   router.get('/types', (req, res) => res.json({ types: ACTION_TYPES, capabilities: transports.capabilities(user(req)) }));
   router.get('/templates', (req, res) => {
     if (Object.keys(req.query).length) throw invalid('Template search filters are not supported.');
@@ -55,29 +61,32 @@ export function createActionsRouter({ actions, runner, transports }) {
     if (Object.keys(input).length < 2) throw invalid('Provide a template change.');
     res.json(actions.updateTemplate(id(req.params.id), input, user(req)));
   });
-  router.get('/runs', (req, res) => res.json(actions.listRuns(user(req), runFilters(req.query))));
-  router.get('/runs/:id', (req, res) => res.json(actions.getRun(id(req.params.id), user(req))));
+  router.get('/runs', (req, res) => {
+    const result = actions.listRuns(user(req), runFilters(req.query));
+    res.json({ ...result, runs: result.runs.map(run => runResult(run, req)) });
+  });
+  router.get('/runs/:id', (req, res) => res.json(runResult(actions.getRun(id(req.params.id), user(req)), req)));
   router.post('/runs', (req, res) => {
     const input = body(req.body, ['name', 'template_id', 'template_version', 'definition', 'values', 'ticket_key']);
     const run = actions.createRun(input, user(req));
     wake(runner);
-    res.status(202).json(run);
+    res.status(202).json(runResult(run, req));
   });
   router.post('/runs/:id/cancel', (req, res) => {
     body(req.body, []);
     const run = actions.cancelRun(id(req.params.id), user(req));
-    res.json(run);
+    res.json(runResult(run, req));
   });
   router.post('/runs/:id/retry', (req, res) => {
     body(req.body, []);
     const run = actions.retryRun(id(req.params.id), user(req));
-    wake(runner); res.json(run);
+    wake(runner); res.json(runResult(run, req));
   });
   router.post('/runs/:id/complete-task', (req, res) => {
     const input = body(req.body, ['comment']);
     if (input.comment !== undefined && (typeof input.comment !== 'string' || input.comment.length > 1000)) throw invalid('Task comments must be at most 1,000 characters.');
     const run = actions.completeTask(id(req.params.id), input, user(req));
-    wake(runner); res.json(run);
+    wake(runner); res.json(runResult(run, req));
   });
   return router;
 }

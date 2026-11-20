@@ -2,7 +2,7 @@
 
 AssetDesk is a self-contained IT service desk: **tickets, technicians, knowledge, personnel, hardware, and support history in one application**. It runs as one Docker service and stores its data in SQLite. BookStack and MariaDB are not required by the application.
 
-The home dashboard shows the active queue, unassigned and overdue work, and technician workload. Knowledge categories have their own access controls. Assets include people and equipment, with ticket links in both directions. **Actions** runs reusable workflows with approvals, email, API calls, Power Automate flows, manual tasks, and delays.
+The home dashboard shows the active queue, unassigned and overdue work, and technician workload. Knowledge categories have their own access controls. Assets include people and equipment, with ticket links in both directions. **Actions** runs templates with approvals, email, API calls, Power Automate flows, manual tasks, and delays. **Workflows** combine those templates and other workflows into reusable sequences.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for Docker Desktop installation, upgrades, migration, HTTPS, and mailbox routing.
 
@@ -101,6 +101,23 @@ Each template has a **title**, a **description**, and a **Technical implementati
 Run details show progress, waiting steps, outcomes, and an activity history. Approval links expire, can be decided only once, and do not approve anything when simply opened by a browser or mail scanner. Approvers use the review page; ordinary email replies do not approve a request. Runs and wait states survive restarts. An external step interrupted before its outcome is known needs operator attention instead of being silently repeated; check the remote service before retrying it.
 
 Manual tasks and delays work without email or API configuration. Email and approval steps require SMTP settings, and approvals also require the public AssetDesk address. API calls and Power Automate flows require configured connections and permitted account roles. Unconfigured integrations produce a visible blocked state rather than a successful result. See [automation configuration](DEPLOYMENT.md#configure-actions-email-and-api-connections).
+
+## Workflows
+
+Open **Actions → Workflows → New workflow** to combine saved action templates and nested workflows. Give the workflow a title and description, define its editable inputs, and choose a template or workflow for each step. Map the selected item's variables to workflow inputs such as `{{person_name}}` and `{{manager_email}}`, or enter fixed values. Reusing a template in two steps keeps their input values separate.
+
+Drag a step by its handle to change the sequence. Move-up and move-down buttons also support keyboard and touch use. The overview on the right shows step titles connected in order; select a title to jump to that step. Nested workflows retain their own ordered sequence.
+
+An employee onboarding process can be assembled as:
+
+1. **Get approval** — an approval template addressed to `{{manager_email}}`.
+2. **Setup standard user** — a nested workflow containing the Active Directory, HR system, and SAP provisioning templates.
+3. **Notify IT** — an email template with account information or instructions for additional setup.
+4. **Welcome employee** — an email template addressed to the new user's email input.
+
+Configure each provisioning template with your organisation's API connection or Power Automate flow, then test it with development accounts. Starting the workflow captures its referenced definitions and values in one saved run. Every step runs in sequence: pending approval, manual work, or a delay holds later steps; rejection stops the workflow. The run page shows both the workflow overview and the underlying technical operations, with the existing completion, retry, and cancellation controls.
+
+Saved workflows track reference versions. If a referenced template or workflow changes, refresh the references and review its variable mappings before saving and starting a new run. For nested changes, update the innermost affected workflow first, then refresh its parent workflows. Existing runs retain their original snapshot. Workflow owners and administrators can edit or archive workflows. Circular nesting, excessive nesting, and oversized expanded sequences are rejected before execution.
 
 ## Ticket reports and CSV export
 

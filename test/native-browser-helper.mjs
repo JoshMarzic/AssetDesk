@@ -9,6 +9,7 @@ import { Worker } from '../src/worker.js';
 import { createApp } from '../src/app.js';
 import { ActionsStore } from '../src/actions-store.js';
 import { ActionsRunner } from '../src/actions-runner.js';
+import { WorkflowsStore } from '../src/workflows-store.js';
 
 export const PASSWORD = 'Native-browser-password-2026';
 export const ADMIN_EMAIL = 'admin@example.test';
@@ -53,6 +54,7 @@ export async function harness(t, { mobile = false, actionTransports: suppliedTra
   workspace.linkTicket(TARGET_KEY, laptop.id, admin);
   const worker = new Worker({ store, desk, workspace, logger: { error() {} } });
   const actions = new ActionsStore(desk), actionMessages = [], actionApiCalls = [], actionFlowCalls = [];
+  const workflows = new WorkflowsStore(actions);
   let origin = '';
   const actionTransports = suppliedTransports || {
     get publicUrl() { return origin; },
@@ -66,7 +68,7 @@ export async function harness(t, { mobile = false, actionTransports: suppliedTra
   };
   const actionsRunner = new ActionsRunner({ actions, transports: actionTransports, logger: { error() {} } });
   const config = { inboundToken: 'native-browser-intake-test-token-12345', adminToken: 'native-browser-admin-test-token-123456', cookieSecure: false };
-  const server = createApp({ store, desk, workspace, worker, config, actions, actionRunner: actionsRunner, actionTransports }).listen(0, '127.0.0.1');
+  const server = createApp({ store, desk, workspace, worker, config, actions, actionRunner: actionsRunner, actionTransports, workflows }).listen(0, '127.0.0.1');
   await once(server, 'listening');
   origin = `http://127.0.0.1:${server.address().port}`;
   worker.start();
@@ -77,7 +79,7 @@ export async function harness(t, { mobile = false, actionTransports: suppliedTra
   page.on('pageerror', error => errors.push(error.message));
   page.on('request', request => requests.push(request.url()));
   t.after(async () => { await browser.close(); await actionsRunner.stop(); await worker.stop(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); store.close(); });
-  return { store, desk, workspace, worker, actions, actionsRunner, actionMessages, actionApiCalls, actionFlowCalls, actionTransports, browser, context, page, errors, requests, origin, admin, avery, casey, general, assetCategory, publicCategory, privateCategory, privateAssetCategory, publicMedia, privateMedia, vpnArticle, privateArticle, person, laptop, monitor, privateAsset, restrictedPerson, visibleOwnedPC, responseTemplate };
+  return { store, desk, workspace, worker, actions, actionsRunner, workflows, actionMessages, actionApiCalls, actionFlowCalls, actionTransports, browser, context, page, errors, requests, origin, admin, avery, casey, general, assetCategory, publicCategory, privateCategory, privateAssetCategory, publicMedia, privateMedia, vpnArticle, privateArticle, person, laptop, monitor, privateAsset, restrictedPerson, visibleOwnedPC, responseTemplate };
 }
 
 export async function signIn(page, origin, email = ADMIN_EMAIL) {

@@ -7,6 +7,7 @@ import { ActionsStore } from './actions-store.js';
 import { ActionsRunner } from './actions-runner.js';
 import { ActionTransports } from './action-transports.js';
 import { createApprovalRouter } from './actions-routes.js';
+import { WorkflowsStore } from './workflows-store.js';
 
 function authorized(token) {
   return (req, res, next) => {
@@ -20,7 +21,7 @@ function authorized(token) {
   };
 }
 
-export function createApp({ store, worker, workspace, config, desk, actions, actionRunner, actionTransports }) {
+export function createApp({ store, worker, workspace, config, desk, actions, actionRunner, actionTransports, workflows }) {
   const app = express();
   app.set('trust proxy', config.trustProxyHops || false);
   app.disable('x-powered-by');
@@ -35,12 +36,14 @@ export function createApp({ store, worker, workspace, config, desk, actions, act
   const intake = authorized(config.inboundToken);
   if (desk) {
     actions ||= new ActionsStore(desk);
+    workflows ||= new WorkflowsStore(actions);
     actionTransports ||= new ActionTransports(config.actions);
     actionRunner ||= new ActionsRunner({ actions, transports: actionTransports });
     app.locals.actions = actions;
+    app.locals.workflows = workflows;
     app.locals.actionRunner = actionRunner;
     app.use('/approve', createApprovalRouter({ actions, runner: actionRunner, publicUrl: config.actions?.publicUrl }));
-    app.use('/api/desk', createDeskRouter({ desk, store, worker, workspace, config, actions, actionRunner, actionTransports }));
+    app.use('/api/desk', createDeskRouter({ desk, store, worker, workspace, config, actions, actionRunner, actionTransports, workflows }));
   }
   app.use(express.static(fileURLToPath(new URL('../public', import.meta.url)), { index: 'index.html', maxAge: 0 }));
   app.get('/healthz', (_req, res) => res.json({ status: 'ok' }));

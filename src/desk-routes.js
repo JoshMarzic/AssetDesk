@@ -10,6 +10,7 @@ import { ActionsStore } from './actions-store.js';
 import { ActionsRunner } from './actions-runner.js';
 import { ActionTransports } from './action-transports.js';
 import { createActionsRouter } from './actions-routes.js';
+import { WorkflowsStore } from './workflows-store.js';
 
 const COOKIE = 'assetdesk_session';
 const SESSION_MS = 8 * 60 * 60 * 1000;
@@ -58,8 +59,9 @@ function onlyFields(body, allowed) {
 }
 
 /** Browser session API. The mail/API bearer credentials never enter the UI. */
-export function createDeskRouter({ desk, store, worker, config, workspace, actions, actionRunner, actionTransports }) {
+export function createDeskRouter({ desk, store, worker, config, workspace, actions, actionRunner, actionTransports, workflows }) {
   actions ||= new ActionsStore(desk);
+  workflows ||= new WorkflowsStore(actions);
   actionTransports ||= new ActionTransports(config.actions);
   actionRunner ||= new ActionsRunner({ actions, transports: actionTransports });
   const router = express.Router();
@@ -135,7 +137,7 @@ export function createDeskRouter({ desk, store, worker, config, workspace, actio
   router.use('/assets', createAssetsRouter({ workspace }));
   router.use('/reports', createReportsRouter({ desk, workspace }));
   router.use('/settings', createSettingsRouter({ desk }));
-  router.use('/actions', createActionsRouter({ actions, runner: actionRunner, transports: actionTransports }));
+  router.use('/actions', createActionsRouter({ actions, runner: actionRunner, transports: actionTransports, workflows }));
   router.get('/workflow', (_req, res) => res.json(desk.settings.snapshot()));
 
   router.get('/session', (req, res) => res.json(sessionBody(req.deskSession)));
