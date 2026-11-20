@@ -73,7 +73,7 @@ function due(ticket, detailed = false) {
 }
 function pill(status) { const tone = ['open', 'in_progress', 'waiting', 'resolved', 'closed'].includes(status) ? status : statusKind(status) === 'active' ? 'in_progress' : statusKind(status); return `<span class="pill ${tone}">${esc(statusLabels[status] || cap(status))}</span>`; }
 function newReportState() { return { draft: { date_field: 'created_at', sort: 'newest', limit: '25' }, applied: { date_field: 'created_at', sort: 'newest', limit: '25' }, tickets: [], total: 0, offset: 0, limit: 25, technicians: [], initialized: false, loading: false, exporting: false, error: '', generation: 0, advanced: false }; }
-const state = { session: null, current: 'overview', tickets: [], total: 0, technicians: [], dashboard: null, assets: [], responses: [], view: 'all', search: '', status: '', priority: '', category: '', assignee: '', sort: 'newest', offset: 0, filtersOpen: false, ticket: null, ticketTag: null, loading: false, generation: 0, busy: false, knowledge: null, knowledgeSearch: '', knowledgeCategory: '', knowledgeOffset: 0, article: null, articleEditing: false, articleDirty: false, articleSaving: false, knowledgeGeneration: 0, asset: null, assetTarget: null, assetSearch: '', assetTypes: [], assetTypeCounts: {}, assetHardwareOpen: false, assetSearchDraft: '', assetCategory: '', assetOffset: 0, assetTotal: 0, assetGeneration: 0, categories: [], workflow: null, settingsTab: 'priorities', settingsGeneration: 0, settingsLoading: false, settingsError: '', reports: newReportState() };
+const state = { session: null, current: 'overview', tickets: [], total: 0, technicians: [], dashboard: null, assets: [], responses: [], view: 'all', search: '', status: '', priority: '', category: '', assignee: '', sort: 'newest', offset: 0, filtersOpen: false, ticket: null, ticketTag: null, loading: false, generation: 0, busy: false, knowledge: null, knowledgeSearch: '', knowledgeCategory: '', knowledgeOffset: 0, article: null, articleEditing: false, articleDirty: false, articleSaving: false, knowledgeGeneration: 0, asset: null, assetTarget: null, assetSearch: '', assetTypes: [], assetTypeCounts: {}, assetLocations: [], assetLocationCounts: [], assetLocationsOpen: false, assetLocationMenuSearch: '', assetHardwareOpen: false, assetSearchDraft: '', assetCategory: '', assetOffset: 0, assetTotal: 0, assetGeneration: 0, categories: [], workflow: null, settingsTab: 'priorities', settingsGeneration: 0, settingsLoading: false, settingsError: '', reports: newReportState() };
 
 const actionsUI = createActionsUI({ api, esc, icon, toast, getUser: () => state.session?.user, getCurrentView: () => state.current, activate: activateActions, openTicket });
 function activateActions() {
@@ -905,7 +905,7 @@ function renderAssetCards(assets, { compact = false } = {}) {
 }
 function resetAssetInventory() {
   state.assetGeneration++;
-  Object.assign(state, { assets: [], asset: null, assetTarget: null, assetTypes: [], assetTypeCounts: {}, assetHardwareOpen: false, assetSearch: '', assetSearchDraft: '', assetCategory: '', assetOffset: 0, assetTotal: 0 });
+  Object.assign(state, { assets: [], asset: null, assetTarget: null, assetTypes: [], assetTypeCounts: {}, assetLocations: [], assetLocationCounts: [], assetLocationsOpen: false, assetLocationMenuSearch: '', assetHardwareOpen: false, assetSearch: '', assetSearchDraft: '', assetCategory: '', assetOffset: 0, assetTotal: 0 });
 }
 function assetTypeCount(types) { return types.reduce((total, type) => total + Number(state.assetTypeCounts[type] || 0), 0); }
 function assetTypePressed(types) {
@@ -932,8 +932,54 @@ function renderAssetTypeControls() {
     <details class="asset-hardware-types" id="asset-hardware-types"${state.assetHardwareOpen ? ' open' : ''}><summary>Hardware types <span>Choose specific equipment types</span>${icon('down')}</summary><div class="asset-type-buttons" role="group" aria-label="Hardware type filters">${hardwareAssetTypes.map(type => assetTypeButton('type-' + type, assetGroupLabels[type], [type], 'laptop')).join('')}</div></details>
   </section>`;
 }
+function assetLocationRows() {
+  const rows = state.assetLocationCounts.map(row => ({ ...row }));
+  for (const location of state.assetLocations) if (!rows.some(row => row.location === location)) rows.push({ location, count: 0 });
+  return rows;
+}
+function assetLocationLabel(location) { return location || 'No location set'; }
+function assetLocationSelectionLabel() {
+  return state.assetLocations.length ? 'Showing ' + state.assetLocations.map(assetLocationLabel).join(' + ') : 'Showing all locations';
+}
+function assetLocationButton(row, index, quick = false) {
+  const label = assetLocationLabel(row.location);
+  const suffix = row.location ? Array.from(row.location, char => char.codePointAt(0).toString(16)).join('-') : 'unset';
+  return `<button class="asset-type-chip asset-location-chip" type="button" id="asset-location-${suffix}" data-asset-location="${index}" data-asset-location-value="${esc(row.location)}"${quick ? ' data-asset-location-quick' : ''} aria-label="${row.location ? 'Show location ' + esc(row.location) : 'Show assets without a location'}" aria-pressed="${state.assetLocations.includes(row.location)}" title="${esc(label)}">${icon('grid')}<span>${esc(label)}</span><span class="asset-type-count" aria-hidden="true">${Number(row.count || 0)}</span></button>`;
+}
+function renderAssetLocationControls() {
+  const rows = assetLocationRows();
+  const top = rows.filter(row => row.location && row.count > 0).slice(0, 5);
+  const rest = rows.filter(row => !top.includes(row));
+  const selectedRest = rest.filter(row => state.assetLocations.includes(row.location)).length;
+  const total = state.assetLocationCounts.reduce((sum, row) => sum + Number(row.count || 0), 0);
+  return `<section class="panel asset-type-panel asset-location-panel" aria-label="Show asset locations">
+    <header><div><h2>Show asset locations</h2><p>The five most-used locations in this view. Choose one or combine several.</p></div><span id="asset-location-selection" class="asset-selection-label" role="status">${esc(assetLocationSelectionLabel())}</span></header>
+    <div class="asset-type-buttons" role="group" aria-label="Top asset locations"><button class="asset-type-chip" id="asset-locations-all" type="button" data-asset-location-reset aria-label="All locations" aria-pressed="${!state.assetLocations.length}">${icon('grid')}<span>All locations</span><span class="asset-type-count" aria-hidden="true">${total}</span></button>${top.map(row => assetLocationButton(row, rows.indexOf(row), true)).join('')}</div>
+    ${!top.length ? '<p class="asset-location-empty">No named locations match this view.</p>' : ''}
+    ${rest.length ? `<details class="asset-hardware-types asset-more-locations" id="asset-more-locations"${state.assetLocationsOpen ? ' open' : ''}><summary>More locations <span>${rest.length} additional option${rest.length === 1 ? '' : 's'}${selectedRest ? ` · ${selectedRest} selected` : ''}</span>${icon('down')}</summary><div class="asset-location-menu"><label for="asset-location-search">Find a location</label><input class="input" type="search" id="asset-location-search" placeholder="Filter the location list…" value="${esc(state.assetLocationMenuSearch)}"><div class="asset-type-buttons" role="group" aria-label="More asset locations">${rest.map(row => assetLocationButton(row, rows.indexOf(row))).join('')}</div><p class="asset-location-empty" id="asset-location-menu-empty" hidden>No locations match this list search.</p></div></details>` : ''}
+  </section>`;
+}
+function filterAssetLocationMenu(rows) {
+  const query = state.assetLocationMenuSearch.trim().toLocaleLowerCase();
+  let visible = 0;
+  document.querySelectorAll('[aria-label="More asset locations"] [data-asset-location]').forEach(button => {
+    const row = rows[Number(button.dataset.assetLocation)];
+    button.hidden = Boolean(query && !assetLocationLabel(row.location).toLocaleLowerCase().includes(query));
+    if (!button.hidden) visible++;
+  });
+  const empty = $('#asset-location-menu-empty'); if (empty) empty.hidden = visible > 0;
+}
+function applyAssetLocation(location, rows) {
+  const next = location === null ? [] : state.assetLocations.includes(location) ? state.assetLocations.filter(item => item !== location) : [...state.assetLocations, location];
+  if (next.length > 100 || JSON.stringify(next).length > 8192) { toast('Choose fewer locations to keep this filter within the request limit.', true); return; }
+  state.assetLocations = next; state.assetSearch = state.assetSearchDraft.trim(); state.assetOffset = 0;
+  document.querySelectorAll('[data-asset-location]').forEach(button => button.setAttribute('aria-pressed', state.assetLocations.includes(rows[Number(button.dataset.assetLocation)].location)));
+  $('#asset-locations-all').setAttribute('aria-pressed', !state.assetLocations.length);
+  $('#asset-location-selection').textContent = assetLocationSelectionLabel();
+  loadAssets();
+}
 function renderGroupedAssets() {
-  if (!state.assets.length) return `<section class="panel" aria-label="Asset groups">${emptyState('No matching assets.', 'Try another combination of types, search text, or knowledge category.', { symbol: 'laptop' })}</section>`;
+  if (!state.assets.length) return `<section class="panel" aria-label="Asset groups">${emptyState('No matching assets.', 'Try another combination of types, locations, search text, or knowledge category.', { symbol: 'laptop' })}</section>`;
   return `<div class="asset-groups" role="region" aria-label="Asset groups">${Object.entries(assetGroupLabels).map(([type, label]) => {
     const assets = state.assets.filter(asset => asset.type === type);
     if (!assets.length) return '';
@@ -963,13 +1009,14 @@ async function loadAssets() {
   const params = new URLSearchParams({ limit: '30', offset: String(state.assetOffset), sort: 'type' });
   if (state.assetSearch) params.set('search', state.assetSearch);
   if (state.assetTypes.length) params.set('types', state.assetTypes.join(','));
+  if (state.assetLocations.length) params.set('locations', JSON.stringify(state.assetLocations));
   if (state.assetCategory) params.set('category_id', state.assetCategory);
   $('[aria-label="Asset groups"]')?.setAttribute('aria-busy', 'true');
   const active = () => generation === state.assetGeneration && state.session?.user.id === user && state.current === 'assets' && !state.asset;
   try {
     const [records, categories] = await Promise.all([api(`/api/desk/assets?${params}`), api('/api/desk/knowledge/categories')]);
     if (!active()) return;
-    state.assets = records.assets || []; state.assetTotal = Number(records.total || 0); state.assetTypeCounts = records.type_counts || {}; state.categories = categories.categories || [];
+    state.assets = records.assets || []; state.assetTotal = Number(records.total || 0); state.assetTypeCounts = records.type_counts || {}; state.assetLocationCounts = records.location_counts || []; state.categories = categories.categories || [];
     if (state.assetOffset && state.assetOffset >= state.assetTotal) { state.assetOffset = Math.max(0, Math.floor((state.assetTotal - 1) / 30) * 30); return loadAssets(); }
     renderAssetInventory();
   } catch (error) {
@@ -980,13 +1027,14 @@ async function loadAssets() {
 function renderAssetInventory() {
   const focused = document.activeElement;
   const focusId = focused?.closest('.asset-type-panel, .native-asset-toolbar') ? focused.id : '';
-  const selection = focusId === 'asset-search' ? [focused.selectionStart, focused.selectionEnd] : null;
+  const selection = ['asset-search', 'asset-location-search'].includes(focusId) ? [focused.selectionStart, focused.selectionEnd] : null;
   $('#breadcrumb-current').textContent = 'Assets'; document.title = 'Assets · AssetDesk';
   const selected = state.categories.find(category => category.id === state.assetCategory);
   $('#main-content').innerHTML = `<div class="page-heading"><div><div class="eyebrow">Your people & equipment</div><h1>Assets</h1><p>People, PCs, hardware, and the support history that connects them.</p></div><div class="heading-actions">${state.categories.some(category => category.kind === 'assets' && canEditCategory(category)) ? `<button class="btn primary" data-action="new-asset">${icon('plus')}New asset</button>` : ''}</div></div>
     ${renderAssetTypeControls()}
+    ${renderAssetLocationControls()}
     <section class="panel native-asset-toolbar grouped-asset-toolbar" aria-label="Asset filters"><form id="asset-search-form" class="native-asset-search" role="search"><label class="sr-only" for="asset-search">Search assets</label>${icon('search')}<input class="input" id="asset-search" type="search" placeholder="Search names, asset IDs, people…" value="${esc(state.assetSearchDraft)}"><button class="btn" type="submit">Search</button></form><div class="field"><label for="asset-category-filter">Knowledge category</label><select id="asset-category-filter"><option value="">All accessible categories</option>${categoryOptions(state.assetCategory, { assetOnly: true })}</select></div></section>
-    <div class="inventory-summary"><span>${state.assetTotal} matching asset${state.assetTotal === 1 ? '' : 's'} · grouped by type</span>${categoryBadge(selected)}${state.assetTypes.length || state.assetSearch || state.assetCategory ? '<button class="view-link" id="asset-clear-filters" type="button">Clear filters</button>' : ''}</div>
+    <div class="inventory-summary"><span>${state.assetTotal} matching asset${state.assetTotal === 1 ? '' : 's'} · grouped by type</span>${categoryBadge(selected)}${state.assetTypes.length || state.assetLocations.length || state.assetSearch || state.assetCategory ? '<button class="view-link" id="asset-clear-filters" type="button">Clear filters</button>' : ''}</div>
     ${renderGroupedAssets()}
     <div class="native-asset-pagination"><span>${state.assetTotal ? `${state.assetOffset + 1}–${Math.min(state.assetOffset + state.assets.length, state.assetTotal)} of ${state.assetTotal}` : 'No assets to show'}</span><div class="pagination"><button class="icon-button" data-action="asset-prev" aria-label="Previous assets"${state.assetOffset <= 0 ? ' disabled' : ''}>${icon('left')}</button><button class="icon-button" data-action="asset-next" aria-label="Next assets"${state.assetOffset + 30 >= state.assetTotal ? ' disabled' : ''}>${icon('chevron')}</button></div></div>`;
   $('#asset-search').addEventListener('input', event => { state.assetSearchDraft = event.target.value; });
@@ -994,12 +1042,18 @@ function renderAssetInventory() {
   $('#asset-category-filter').addEventListener('change', event => { state.assetCategory = event.target.value; state.assetSearch = state.assetSearchDraft.trim(); state.assetOffset = 0; loadAssets(); });
   document.querySelectorAll('[data-asset-types]').forEach(button => button.addEventListener('click', () => applyAssetTypes(button.dataset.assetTypes ? button.dataset.assetTypes.split(',') : [])));
   $('#asset-hardware-types').addEventListener('toggle', event => { state.assetHardwareOpen = event.target.open; });
+  const locationRows = assetLocationRows();
+  document.querySelectorAll('[data-asset-location]').forEach(button => button.addEventListener('click', () => applyAssetLocation(locationRows[Number(button.dataset.assetLocation)].location, locationRows)));
+  $('#asset-locations-all').addEventListener('click', () => applyAssetLocation(null, locationRows));
+  $('#asset-more-locations')?.addEventListener('toggle', event => { state.assetLocationsOpen = event.target.open; });
+  $('#asset-location-search')?.addEventListener('input', event => { state.assetLocationMenuSearch = event.target.value; filterAssetLocationMenu(locationRows); });
+  filterAssetLocationMenu(locationRows);
   $('#asset-clear-filters')?.addEventListener('click', clearAssetFilters);
   const nextFocus = focusId && document.getElementById(focusId);
   if (nextFocus) { nextFocus.focus({ preventScroll: true }); if (selection) nextFocus.setSelectionRange(...selection); }
 }
 function clearAssetFilters() {
-  Object.assign(state, { assetTypes: [], assetSearch: '', assetSearchDraft: '', assetCategory: '', assetOffset: 0 });
+  Object.assign(state, { assetTypes: [], assetLocations: [], assetLocationMenuSearch: '', assetSearch: '', assetSearchDraft: '', assetCategory: '', assetOffset: 0 });
   loadAssets();
 }
 

@@ -255,25 +255,41 @@ export class WorkspaceStore {
       if (types.length) throw fail('Use either one asset type or a list of asset types.');
       types = [filters.type];
     }
+    let locations = [];
+    if (filters.locations !== undefined) {
+      if (typeof filters.locations !== 'string' || filters.locations.length > 8192) throw fail('Provide valid asset locations as a JSON array.');
+      try { locations = JSON.parse(filters.locations); } catch { throw fail('Provide valid asset locations as a JSON array.'); }
+      if (!Array.isArray(locations) || locations.length > 100 || locations.some(location => typeof location !== 'string' || location.length > 300 || location.includes('\0'))) throw fail('Choose at most 100 valid asset locations.');
+      locations = [...new Set(locations.map(location => location.trim() ? location : ''))];
+    }
     if (filters.sort !== undefined && filters.sort !== '' && filters.sort !== 'type') throw fail('Invalid asset sort.');
     if (filters.category_id) { this.getCategory(filters.category_id, user); clauses.push('a.category_id=?'); args.push(filters.category_id); }
     if (filters.search) {
       const term = likeTerm(filters.search); clauses.push("(a.ref LIKE ? ESCAPE '\\' OR a.name LIKE ? ESCAPE '\\' OR a.serial_number LIKE ? ESCAPE '\\' OR a.email LIKE ? ESCAPE '\\')");
       args.push(...Array(4).fill(`%${term}%`));
     }
-    // Facets share the readable/search/category constraints but remain useful
-    // when another type is selected. Restricted records never enter the count.
+    // Keep every facet under the same access/search/category constraints.
+    // Each facet ignores its own selection and applies the other facet, so
+    // users can add locations or types without first clearing a selection.
+    // Older whitespace-only locations share the explicit unset-location bucket.
+    const locationValue = "CASE WHEN TRIM(COALESCE(a.location,''), ' '||char(9)||char(10)||char(11)||char(12)||char(13))='' THEN '' ELSE a.location END";
+    const typeClause = types.length ? `a.type IN (${types.map(() => '?').join(',')})` : '';
+    const locationClause = locations.length ? `${locationValue} IN (${locations.map(() => '?').join(',')})` : '';
+    const typeWhere = [...clauses, ...(locationClause ? [locationClause] : [])].join(' AND ');
     const type_counts = Object.fromEntries(ASSET_TYPES.map(type => [type, 0]));
-    for (const row of this.db.prepare(`SELECT a.type,COUNT(*) AS count FROM native_assets a JOIN knowledge_categories c ON c.id=a.category_id WHERE ${clauses.join(' AND ')} GROUP BY a.type`).all(...args)) {
+    for (const row of this.db.prepare(`SELECT a.type,COUNT(*) AS count FROM native_assets a JOIN knowledge_categories c ON c.id=a.category_id WHERE ${typeWhere} GROUP BY a.type`).all(...args, ...locations)) {
       if (Object.hasOwn(type_counts, row.type)) type_counts[row.type] = row.count;
     }
-    if (types.length) { clauses.push(`a.type IN (${types.map(() => '?').join(',')})`); args.push(...types); }
+    const locationWhere = [...clauses, ...(typeClause ? [typeClause] : [])].join(' AND ');
+    const location_counts = this.db.prepare(`SELECT ${locationValue} AS location,COUNT(*) AS count FROM native_assets a JOIN knowledge_categories c ON c.id=a.category_id WHERE ${locationWhere} GROUP BY ${locationValue} ORDER BY count DESC,location COLLATE NOCASE,location COLLATE BINARY`).all(...args, ...types).map(row => ({ ...row }));
+    if (typeClause) { clauses.push(typeClause); args.push(...types); }
+    if (locationClause) { clauses.push(locationClause); args.push(...locations); }
     const where = clauses.join(' AND ');
     const total = this.db.prepare(`SELECT COUNT(*) AS count FROM native_assets a JOIN knowledge_categories c ON c.id=a.category_id WHERE ${where}`).get(...args).count;
     const grouped = filters.sort === 'type';
     const order = grouped ? `CASE a.type ${ASSET_TYPES.map((_type, index) => `WHEN ? THEN ${index}`).join(' ')} ELSE ${ASSET_TYPES.length} END,a.ref COLLATE NOCASE,a.id` : 'a.updated_at DESC,a.ref';
     const rows = this.db.prepare(`SELECT a.* FROM native_assets a JOIN knowledge_categories c ON c.id=a.category_id WHERE ${where} ORDER BY ${order} LIMIT ? OFFSET ?`).all(...args, ...(grouped ? ASSET_TYPES : []), page.limit, page.offset);
-    return { assets: rows.map(row => this.assetResult(row, user)), total, type_counts, ...page };
+    return { assets: rows.map(row => this.assetResult(row, user)), total, type_counts, location_counts, ...page };
   }
   getAsset(idOrRef, user) {
     auth(user);

@@ -6,7 +6,13 @@ const ASSET_FIELDS = ['ref','name','type','category_id','owner_id','owner_name',
 export function createAssetsRouter({ workspace }) {
   const router = express.Router();
   const user = req => req.deskSession.user;
-  router.get('/', (req, res) => res.json(workspace.listAssets(user(req), listFilters(req.query, ['type', 'types', 'sort']))));
+  router.get('/', (req, res) => {
+    const filters = listFilters(req.query, ['type', 'types', 'sort']);
+    // A JSON array preserves commas, quotes, and other legitimate location
+    // characters. Do not run this through the short generic scalar filter.
+    if (req.query.locations !== undefined) filters.locations = req.query.locations;
+    res.json(workspace.listAssets(user(req), filters));
+  });
   router.post('/', (req, res) => {
     bodyFields(req.body, ASSET_FIELDS);
     res.status(201).json(workspace.createAsset(req.body, user(req)));
