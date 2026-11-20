@@ -24,6 +24,18 @@ const DEFAULT_RESPONSES = [
   { id: 'default-resolution-confirmation', title: 'Resolution confirmation', body: 'Hi {{requester}},\n\nWe have completed the work on {{ticket_id}} — {{subject}}. Please confirm that everything is working as expected, or reply with any remaining symptoms.\n\nThank you,\n{{technician}}' },
 ];
 function error(message, statusCode = 400) { return Object.assign(new Error(message), { statusCode, safeMessage: message }); }
+export function normalizeTicketTag(value) {
+  if (typeof value !== 'string' || value.length > 1000 || /[\x00-\x1f\x7f-\x9f]/.test(value)) throw error('Tags must contain 1 to 50 characters without control characters.');
+  const name = value.normalize('NFKC').trim().replace(/\s+/gu, ' ');
+  if (!name || [...name].length > 50) throw error('Tags must contain 1 to 50 characters without control characters.');
+  return { name, normalized: name.toLowerCase() };
+}
+export function normalizeTicketTags(values) {
+  if (!Array.isArray(values) || values.length > 25) throw error('Provide a list of at most 25 tags.');
+  const unique = new Map();
+  for (const value of values) { const tag = normalizeTicketTag(value); if (!unique.has(tag.normalized)) unique.set(tag.normalized, tag.name); }
+  return [...unique.values()];
+}
 function text(value, name, max = 200, { empty = false } = {}) {
   if (typeof value !== 'string' || (!empty && !value.trim()) || value.length > max || value.includes('\0')) throw error(`${name} is required and must be at most ${max} characters.`);
   return value.trim();
@@ -80,6 +92,11 @@ export class DeskStore {
           id TEXT PRIMARY KEY, ticket_key TEXT NOT NULL, type TEXT NOT NULL, body TEXT NOT NULL,
           actor_id TEXT, actor_name TEXT NOT NULL, created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS ticket_tags (
+          ticket_key TEXT NOT NULL, normalized TEXT NOT NULL, name TEXT NOT NULL,
+          created_at TEXT NOT NULL, actor_id TEXT,
+          PRIMARY KEY(ticket_key,normalized), FOREIGN KEY(ticket_key) REFERENCES tickets(key) ON DELETE CASCADE
+        );
         CREATE TABLE IF NOT EXISTS ticket_assets (
           ticket_key TEXT NOT NULL, ref TEXT NOT NULL, page_id INTEGER, url TEXT NOT NULL,
           PRIMARY KEY(ticket_key,ref)
@@ -105,6 +122,7 @@ export class DeskStore {
         CREATE INDEX IF NOT EXISTS tickets_workflow ON tickets(status,assignee_id,priority);
         CREATE INDEX IF NOT EXISTS notes_ticket ON ticket_notes(ticket_key,created_at);
         CREATE INDEX IF NOT EXISTS events_ticket ON ticket_events(ticket_key,created_at);
+        CREATE INDEX IF NOT EXISTS ticket_tags_normalized ON ticket_tags(normalized,name);
         CREATE INDEX IF NOT EXISTS assets_reference ON ticket_assets(ref,ticket_key);
         CREATE INDEX IF NOT EXISTS tickets_requester ON tickets(requester COLLATE NOCASE,updated_at DESC);
         CREATE INDEX IF NOT EXISTS tickets_missing_sla ON tickets(key)
@@ -225,7 +243,7 @@ export class DeskStore {
     const responseOverdue = active && !row.first_response_at && Date.parse(row.response_due_at) < timestamp;
     const resolutionOverdue = active && Date.parse(row.resolution_due_at) < timestamp;
     const { page_id, page_url, ...native } = row;
-    return { ...native, assignee: row.assignee_id ? this.user(row.assignee_id) : null,
+    return { ...native, tags: this.ticketTags(row.key), assignee: row.assignee_id ? this.user(row.assignee_id) : null,
       is_overdue: responseOverdue || resolutionOverdue, response_overdue: responseOverdue,
       resolution_overdue: resolutionOverdue };
   }
@@ -272,6 +290,43 @@ export class DeskStore {
   }
   event(key, type, body, actor) {
     this.db.prepare('INSERT INTO ticket_events (id,ticket_key,type,body,actor_id,actor_name,created_at) VALUES (?,?,?,?,?,?,?)').run(randomUUID(), key, type, body, actor?.id ?? null, actorName(actor), now());
+  }
+  ticketTags(key) {
+    return this.db.prepare('SELECT name FROM ticket_tags WHERE ticket_key=? ORDER BY normalized,name').all(key).map(tag => tag.name);
+  }
+  listTags({ search = '', limit = 25 } = {}) {
+    if (typeof search !== 'string' || search.length > 200 || /[\x00-\x1f\x7f-\x9f]/.test(search)
+      || !Number.isInteger(limit) || limit < 1 || limit > 100) throw error('Provide a valid tag search and a limit between 1 and 100.');
+    const normalized = search.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
+    const escaped = normalized.replace(/[\\%_]/g, char => `\\${char}`);
+    return this.db.prepare(`SELECT MIN(t.name) AS name,COUNT(*) AS ticket_count FROM ticket_tags t JOIN tickets k ON k.key=t.ticket_key
+      WHERE t.normalized LIKE ? ESCAPE '\\' GROUP BY t.normalized ORDER BY t.normalized LIMIT ?`).all(`%${escaped}%`, limit).map(tag => ({ ...tag }));
+  }
+  addTicketTag(key, value, actor) {
+    const tag = normalizeTicketTag(value);
+    return this.transaction(() => {
+      if (!this.db.prepare('SELECT 1 FROM tickets WHERE key=?').get(key)) throw error('Ticket not found.', 404);
+      if (this.db.prepare('SELECT 1 FROM ticket_tags WHERE ticket_key=? AND normalized=?').get(key, tag.normalized)) return this.getTicket(key);
+      if (this.db.prepare('SELECT COUNT(*) AS count FROM ticket_tags WHERE ticket_key=?').get(key).count >= 25) throw error('A ticket can have at most 25 tags.');
+      const name = this.db.prepare('SELECT name FROM ticket_tags WHERE normalized=? ORDER BY created_at,ticket_key LIMIT 1').get(tag.normalized)?.name || tag.name;
+      this.db.prepare('INSERT INTO ticket_tags(ticket_key,normalized,name,created_at,actor_id) VALUES (?,?,?,?,?)').run(key, tag.normalized, name, now(), actor?.id || null);
+      this.db.prepare('UPDATE tickets SET updated_at=?,version=version+1 WHERE key=?').run(now(), key);
+      this.event(key, 'tag', `Added tag: ${name}`, actor);
+      return this.getTicket(key);
+    });
+  }
+  removeTicketTag(key, value, actor) {
+    const tag = normalizeTicketTag(value);
+    return this.transaction(() => {
+      if (!this.db.prepare('SELECT 1 FROM tickets WHERE key=?').get(key)) throw error('Ticket not found.', 404);
+      const found = this.db.prepare('SELECT name FROM ticket_tags WHERE ticket_key=? AND normalized=?').get(key, tag.normalized);
+      if (found) {
+        this.db.prepare('DELETE FROM ticket_tags WHERE ticket_key=? AND normalized=?').run(key, tag.normalized);
+        this.db.prepare('UPDATE tickets SET updated_at=?,version=version+1 WHERE key=?').run(now(), key);
+        this.event(key, 'tag', `Removed tag: ${found.name}`, actor);
+      }
+      return this.getTicket(key);
+    });
   }
   updateTicket(key, patch, { actor, version } = {}) {
     const allowed = ['subject', 'status', 'priority', 'category', 'assignee_id', 'resolution', 'first_response'];

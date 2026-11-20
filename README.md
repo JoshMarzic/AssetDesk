@@ -44,6 +44,8 @@ Tickets are saved locally and open immediately. Set General/Hardware/Software/Ne
 
 Response templates support `{{requester}}`, `{{technician}}`, `{{ticket_id}}`, and `{{subject}}`. Insert one into an internal note or copy it for your mail client. These actions do not send email. Mark first response only after contacting the requester; it records that action rather than sending a reply.
 
+Use **Tags** on any ticket to add labels such as `VIP`, `needs approval`, or `onboarding`. Type a new tag and press **Enter** to save it immediately, or reuse an existing suggestion. Remove a tag with its remove button. Tags can also be entered while creating a ticket. Names are case-insensitive, allow up to 50 characters, and support up to 25 distinct tags per ticket; changing tags records an activity entry.
+
 Response and resolution indicators use elapsed wall-clock time from original ticket acceptance:
 
 | Priority | First response | Resolution |
@@ -86,6 +88,8 @@ The left navigation includes **Actions**. It currently opens a clear placeholder
 Select **Reports**, immediately below Actions, to search ticket history. Combine submitted-date ranges, ticket type/category, status, priority, technician, source, requester, and text searches. Advanced filters cover specific ticket fields, notes, linked assets, response/resolution records and SLA outcomes, elapsed minutes, and note/asset counts. The date selector also supports updated, first-response, resolved, and due dates. Date ranges include both selected calendar days in UTC.
 
 Select **Search tickets** to apply the filters. Results show the matching count, support sorting and pagination, and open the existing ticket details. **Export CSV** downloads every matching ticket using the applied search, including results on other pages. Unsubmitted filter edits do not change the export. CSV files use UTF-8, preserve quoted/multiline text, and neutralize spreadsheet formulas in ticket content. Asset filters, counts, and exported details follow the signed-in user's category permissions.
+
+The **Tag** filter matches one complete tag, ignoring case and extra spaces. The general search also finds partial tag names. Report results display ticket tags, and CSV exports include a **Tags** column.
 
 ## Upgrade and optional legacy import
 

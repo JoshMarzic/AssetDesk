@@ -1,6 +1,7 @@
 import express from 'express';
 import { once } from 'node:events';
 import { ASSET_TYPES } from './workspace-store.js';
+import { normalizeTicketTag } from './desk-store.js';
 
 const ENUMS = Object.freeze({
   status: ['open', 'in_progress', 'waiting', 'resolved', 'closed'],
@@ -12,7 +13,7 @@ const ENUMS = Object.freeze({
   response_sla: ['pending', 'overdue', 'met', 'breached'], resolution_sla: ['pending', 'overdue', 'met', 'breached'],
   sort: ['newest', 'oldest', 'updated', 'priority', 'due', 'requester'],
 });
-const TEXT_FILTERS = ['search', 'ticket_key', 'subject', 'description', 'requester', 'resolution', 'note', 'asset'];
+const TEXT_FILTERS = ['search', 'ticket_key', 'subject', 'description', 'requester', 'resolution', 'note', 'asset', 'tag'];
 const NUMBER_FILTERS = ['response_minutes', 'resolution_minutes', 'note_count', 'email_count', 'asset_count'];
 const ALLOWED = new Set([...TEXT_FILTERS, ...Object.keys(ENUMS), 'assignee', 'date_from', 'date_to', 'limit', 'offset', ...NUMBER_FILTERS.flatMap(name => [`${name}_min`, `${name}_max`])]);
 const SORTS = Object.freeze({
@@ -49,6 +50,8 @@ export function reportFilters(query) {
       const count = /^(?:note|email|asset)_count_/.test(name);
       if (!(count ? /^\d{1,9}$/ : /^\d{1,9}(?:\.\d{1,4})?$/).test(value)) throw invalid(`Invalid ${name} filter.`);
       filters[name] = Number(value);
+    } else if (name === 'tag') {
+      filters.tag = normalizeTicketTag(value).normalized;
     } else if (name === 'assignee') {
       if (value !== 'unassigned' && !/^[A-Za-z0-9_-]{1,100}$/.test(value)) throw invalid('Invalid technician filter.');
       filters[name] = value;
@@ -87,10 +90,12 @@ function queryReport(workspace, user, filters, timestamp) {
   for (const name of ['ticket_key', 'subject', 'description', 'resolution']) if (filters[name]) { clauses.push(like(`r.${name === 'ticket_key' ? 'key' : name}`)); args.push(term(filters[name])); }
   if (filters.requester) { clauses.push(`(${like('r.requester')} OR ${like('r.requester_name')})`); args.push(term(filters.requester), term(filters.requester)); }
   if (filters.note) { clauses.push(`EXISTS(SELECT 1 FROM ticket_notes n WHERE n.ticket_key=r.key AND ${like('n.body')})`); args.push(term(filters.note)); }
+  if (filters.tag) { clauses.push('EXISTS(SELECT 1 FROM ticket_tags tt WHERE tt.ticket_key=r.key AND tt.normalized=?)'); args.push(filters.tag); }
   if (filters.search) {
     const fields = ['r.key','r.subject','r.description','r.requester','r.requester_name','r.resolution','r.assigned_name','r.assigned_email'];
-    clauses.push(`(${fields.map(like).join(' OR ')} OR EXISTS(SELECT 1 FROM ticket_notes n WHERE n.ticket_key=r.key AND ${like('n.body')}) OR EXISTS(SELECT 1 FROM visible_assets a WHERE a.ticket_key=r.key AND (${like('a.ref')} OR ${like('a.name')})))`);
+    clauses.push(`(${fields.map(like).join(' OR ')} OR EXISTS(SELECT 1 FROM ticket_notes n WHERE n.ticket_key=r.key AND ${like('n.body')}) OR EXISTS(SELECT 1 FROM visible_assets a WHERE a.ticket_key=r.key AND (${like('a.ref')} OR ${like('a.name')})) OR EXISTS(SELECT 1 FROM ticket_tags tt WHERE tt.ticket_key=r.key AND ${like('tt.normalized')}))`);
     args.push(...Array(fields.length + 3).fill(term(filters.search)));
+    args.push(term(filters.search.normalize('NFKC').replace(/\s+/gu, ' ').toLowerCase()));
   }
   if (filters.assignee === 'unassigned') clauses.push('r.assignee_id IS NULL');
   else if (filters.assignee) { clauses.push('r.assignee_id=?'); args.push(filters.assignee); }
@@ -116,7 +121,7 @@ function presenter(desk, workspace, user) {
   return row => {
     const { page_id, page_url, assigned_name, assigned_email, assigned_role, assigned_active, ...ticket } = row;
     return { ...ticket, assignee: row.assignee_id && assigned_name ? { id: row.assignee_id, name: assigned_name, email: assigned_email, role: assigned_role, active: Boolean(assigned_active) } : null,
-      assets: assets.all(row.key, ...access.args), is_overdue: row.response_sla === 'overdue' || row.resolution_sla === 'overdue' };
+      assets: assets.all(row.key, ...access.args), tags: desk.ticketTags(row.key), is_overdue: row.response_sla === 'overdue' || row.resolution_sla === 'overdue' };
   };
 }
 
@@ -133,6 +138,7 @@ const CSV_COLUMNS = [
   ['Resolution', t => t.resolution], ['Internal notes', t => t.note_count], ['Email replies', t => t.email_count],
   ['Linked assets', t => t.assets.map(a => a.ref).join('; ')], ['Asset names', t => t.assets.map(a => a.name).join('; ')],
   ['Asset types', t => t.assets.map(a => a.type).join('; ')], ['Visible asset count', t => t.asset_count],
+  ['Tags', t => t.tags.join('; ')],
 ];
 
 export function csvCell(input) {

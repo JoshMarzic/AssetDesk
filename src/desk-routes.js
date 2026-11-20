@@ -4,6 +4,7 @@ import { parseRawEmail } from './email.js';
 import { createKnowledgeRouter } from './knowledge.js';
 import { createAssetsRouter } from './workspace-routes.js';
 import { createReportsRouter } from './reports.js';
+import { normalizeTicketTags } from './desk-store.js';
 
 const COOKIE = 'assetdesk_session';
 const SESSION_MS = 8 * 60 * 60 * 1000;
@@ -152,6 +153,13 @@ export function createDeskRouter({ desk, store, worker, config, workspace }) {
     res.json({ ...dashboard, intake: { counts: store.counts() } });
   });
   router.get('/responses', (_req, res) => res.json({ responses: desk.listResponses() }));
+  router.get('/tags', (req, res) => {
+    for (const key of Object.keys(req.query)) if (!['search', 'limit'].includes(key)) throw invalid('Provide valid tag search filters.');
+    const search = scalarQuery(req.query.search, 'tag search') || '';
+    const suppliedLimit = scalarQuery(req.query.limit, 'tag limit', 3);
+    if (suppliedLimit !== undefined && !/^\d+$/.test(suppliedLimit)) throw invalid('Provide a valid tag limit.');
+    res.json({ tags: desk.listTags({ search, limit: suppliedLimit === undefined ? 25 : Number(suppliedLimit) }) });
+  });
   router.post('/responses', adminOnly, (req, res) => {
     const body = objectBody(req.body);
     onlyFields(body, ['title', 'body']);
@@ -205,7 +213,8 @@ export function createDeskRouter({ desk, store, worker, config, workspace }) {
   });
   router.post('/tickets', async (req, res) => {
     const body = objectBody(req.body);
-    onlyFields(body, ['subject', 'requester', 'requester_name', 'description', 'priority', 'category', 'assignee_id']);
+    onlyFields(body, ['subject', 'requester', 'requester_name', 'description', 'priority', 'category', 'assignee_id', 'tags']);
+    const tags = normalizeTicketTags(body.tags === undefined ? [] : body.tags);
     const { subject, requester, description } = body;
     if (typeof subject !== 'string' || !subject.trim() || subject.length > 240 || /[\x00-\x1f\x7f]/.test(subject)
       || typeof requester !== 'string' || requester.length > 254 || !/^[^\s<>\x00-\x1f@]+@[^\s<>\x00-\x1f@]+\.[^\s<>\x00-\x1f@]+$/.test(requester)
@@ -226,7 +235,11 @@ export function createDeskRouter({ desk, store, worker, config, workspace }) {
       priority: body.priority || 'normal', category: body.category || 'general',
       assignee_id: body.assignee_id || null, source: 'manual', actor: req.deskSession.user,
     };
-    const receipt = worker.accept(message);
+    const receipt = desk.transaction(() => {
+      const accepted = worker.accept(message);
+      for (const tag of tags) desk.addTicketTag(accepted.ticketKey, tag, req.deskSession.user);
+      return accepted;
+    });
     worker.wake();
     res.status(202).json({ ...receipt, statusUrl: `/api/desk/receipts/${receipt.id}` });
   });
@@ -252,6 +265,14 @@ export function createDeskRouter({ desk, store, worker, config, workspace }) {
     const body = objectBody(req.body);
     onlyFields(body, ['body']);
     res.status(201).json(presentTicket(desk.addNote(req.params.key, { body: body.body, actor: req.deskSession.user }), req.deskSession.user));
+  });
+  router.post('/tickets/:key/tags', (req, res) => {
+    const body = objectBody(req.body); onlyFields(body, ['tag']);
+    res.status(201).json(presentTicket(desk.addTicketTag(req.params.key, body.tag, req.deskSession.user), req.deskSession.user));
+  });
+  router.delete('/tickets/:key/tags', (req, res) => {
+    const body = objectBody(req.body); onlyFields(body, ['tag']);
+    res.json(presentTicket(desk.removeTicketTag(req.params.key, body.tag, req.deskSession.user), req.deskSession.user));
   });
   router.post('/tickets/:key/assets', (req, res) => {
     const body = objectBody(req.body);
