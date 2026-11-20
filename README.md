@@ -6,6 +6,8 @@ The home dashboard shows the active queue, unassigned and overdue work, and tech
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for Docker Desktop installation, upgrades, migration, HTTPS, and mailbox routing.
 
+View the [AssetDesk Feature Tour (PDF)](docs/AssetDesk-Feature-Tour.pdf) for 23 pages of screenshots and feature captions using demonstration data.
+
 ## Run locally
 
 Requires Docker with Compose v2 and Node.js 24. Start Docker Desktop using Linux containers, then run:

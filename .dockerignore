@@ -4,6 +4,7 @@
 node_modules
 data
 coverage
+docs
 test
 scripts/*
 !scripts/import-bookstack.mjs
