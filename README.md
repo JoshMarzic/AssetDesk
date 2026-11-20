@@ -81,6 +81,12 @@ You can also link an accessible asset manually from a ticket. The asset's detail
 
 The left navigation includes **Actions**. It currently opens a clear placeholder for future onboarding, equipment-preparation, maintenance, and other repeatable automations. No actions are configured, scheduled, or run in this release.
 
+## Ticket reports and CSV export
+
+Select **Reports**, immediately below Actions, to search ticket history. Combine submitted-date ranges, ticket type/category, status, priority, technician, source, requester, and text searches. Advanced filters cover specific ticket fields, notes, linked assets, response/resolution records and SLA outcomes, elapsed minutes, and note/asset counts. The date selector also supports updated, first-response, resolved, and due dates. Date ranges include both selected calendar days in UTC.
+
+Select **Search tickets** to apply the filters. Results show the matching count, support sorting and pagination, and open the existing ticket details. **Export CSV** downloads every matching ticket using the applied search, including results on other pages. Unsubmitted filter edits do not change the export. CSV files use UTF-8, preserve quoted/multiline text, and neutralize spreadsheet formulas in ticket content. Asset filters, counts, and exported details follow the signed-in user's category permissions.
+
 ## Upgrade and optional legacy import
 
 Existing tickets, accounts, notes, sessions, and saved responses remain in the original SQLite `intake` volume. Back up that volume and private `.env`, then update:

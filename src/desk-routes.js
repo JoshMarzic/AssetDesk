@@ -3,6 +3,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { parseRawEmail } from './email.js';
 import { createKnowledgeRouter } from './knowledge.js';
 import { createAssetsRouter } from './workspace-routes.js';
+import { createReportsRouter } from './reports.js';
 
 const COOKIE = 'assetdesk_session';
 const SESSION_MS = 8 * 60 * 60 * 1000;
@@ -126,6 +127,7 @@ export function createDeskRouter({ desk, store, worker, config, workspace }) {
 
   router.use('/knowledge', createKnowledgeRouter({ workspace, config }));
   router.use('/assets', createAssetsRouter({ workspace }));
+  router.use('/reports', createReportsRouter({ desk, workspace }));
 
   router.get('/session', (req, res) => res.json(sessionBody(req.deskSession)));
   router.post('/logout', (req, res) => {

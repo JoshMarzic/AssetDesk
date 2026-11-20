@@ -38,6 +38,8 @@ const icons = {
   mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 6 9 7 9-7"/>',
   shield: '<path d="m12 2 9 4v6c0 5-9 10-9 10S3 17 3 12V6z"/><path d="m8 12 3 3 5-6"/>',
   dots: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+  reports: '<path d="M5 3h10l4 4v14H5z"/><path d="M14 3v5h5M8 17v-3m4 3v-6m4 6v-4"/>',
+  download: '<path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"/>',
   spark: '<path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/>',
 };
 const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.ticket}</svg>`;
@@ -65,13 +67,14 @@ function due(ticket, detailed = false) {
   return `<span class="due ${diff < 0 ? 'overdue' : ''}" title="${esc(shortDate(value))}">${diff < 0 ? `${duration} overdue` : `${detailed ? 'Due in ' : ''}${duration}${detailed ? '' : ' left'}`}</span>`;
 }
 function pill(status) { return `<span class="pill ${Object.hasOwn(statusLabels, status) ? status : 'open'}">${esc(statusLabels[status] || cap(status))}</span>`; }
-const state = { session: null, current: 'overview', tickets: [], total: 0, technicians: [], dashboard: null, assets: [], responses: [], view: 'all', search: '', status: '', priority: '', category: '', assignee: '', sort: 'newest', offset: 0, filtersOpen: false, ticket: null, loading: false, generation: 0, busy: false, knowledge: null, knowledgeSearch: '', knowledgeCategory: '', knowledgeOffset: 0, article: null, articleEditing: false, articleDirty: false, articleSaving: false, knowledgeGeneration: 0, asset: null, assetTarget: null, assetSearch: '', assetType: '', assetCategory: '', assetOffset: 0, assetTotal: 0, assetGeneration: 0, categories: [] };
+function newReportState() { return { draft: { date_field: 'created_at', sort: 'newest', limit: '25' }, applied: { date_field: 'created_at', sort: 'newest', limit: '25' }, tickets: [], total: 0, offset: 0, limit: 25, technicians: [], initialized: false, loading: false, exporting: false, error: '', generation: 0, advanced: false }; }
+const state = { session: null, current: 'overview', tickets: [], total: 0, technicians: [], dashboard: null, assets: [], responses: [], view: 'all', search: '', status: '', priority: '', category: '', assignee: '', sort: 'newest', offset: 0, filtersOpen: false, ticket: null, loading: false, generation: 0, busy: false, knowledge: null, knowledgeSearch: '', knowledgeCategory: '', knowledgeOffset: 0, article: null, articleEditing: false, articleDirty: false, articleSaving: false, knowledgeGeneration: 0, asset: null, assetTarget: null, assetSearch: '', assetType: '', assetCategory: '', assetOffset: 0, assetTotal: 0, assetGeneration: 0, categories: [], reports: newReportState() };
 
 async function api(path, { method = 'GET', body } = {}) {
   const response = await fetch(path, { method, credentials: 'same-origin', headers: { Accept: 'application/json', ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(method !== 'GET' && state.session?.csrfToken ? { 'X-CSRF-Token': state.session.csrfToken } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    if (response.status === 401 && path !== '/api/desk/login') { state.session = null; closeDialogs(); renderLogin(); }
+    if (response.status === 401 && path !== '/api/desk/login') { state.session = null; state.reports = newReportState(); closeDialogs(); renderLogin(); }
     const error = new Error(data.error || `Request failed (${response.status}).`);
     error.status = response.status;
     throw error;
@@ -96,14 +99,14 @@ function renderLogin(error = '') {
     event.preventDefault();
     const form = event.currentTarget; const button = $('button[type=submit]', form); const values = new FormData(form);
     button.disabled = true; button.textContent = 'Signing in…';
-    try { state.session = await api('/api/desk/login', { method: 'POST', body: { email: values.get('email'), password: values.get('password') } }); const initial = location.hash.slice(1); if (['overview', 'tickets', 'my-tickets', 'assets', 'team', 'knowledge', 'actions'].includes(initial)) state.current = initial; renderShell(); await restoreLocation(); }
+    try { state.session = await api('/api/desk/login', { method: 'POST', body: { email: values.get('email'), password: values.get('password') } }); const initial = location.hash.slice(1); if (['overview', 'tickets', 'my-tickets', 'assets', 'team', 'knowledge', 'actions', 'reports'].includes(initial)) state.current = initial; renderShell(); await restoreLocation(); }
     catch (error) { $('.field-error', form).textContent = error.message; button.disabled = false; button.innerHTML = `Sign in ${icon('arrow')}`; }
   });
 }
 function navItem(view, label, symbol, count) { return `<button class="nav-item${state.current === view ? ' active' : ''}" data-nav="${view}" ${state.current === view ? 'aria-current="page"' : ''}>${icon(symbol)}<span>${label}</span>${count !== undefined ? `<span class="nav-count">${count}</span>` : ''}</button>`; }
 function renderShell() {
   const user = state.session.user;
-  app.innerHTML = `<div class="shell"><button class="sidebar-mobile-overlay" aria-label="Close navigation" data-action="menu"></button><aside class="sidebar" aria-label="Main navigation"><a href="#overview" class="brand" data-nav="overview"><span class="brand-mark">${icon('ticket')}</span>AssetDesk</a><div class="workspace-switch"><span class="workspace-icon">IT</span><div class="workspace-label">IT workspace<small>Support, together.</small></div></div><div class="sidebar-group-label">Workspace</div><nav class="nav-group">${navItem('overview', 'Overview', 'grid')}${navItem('tickets', 'All tickets', 'ticket', state.dashboard?.stats?.open ?? 0)}${navItem('my-tickets', 'My tickets', 'inbox')}${navItem('assets', 'Assets', 'laptop')}${navItem('actions', 'Actions', 'spark')}</nav><div class="sidebar-group-label">Organization</div><nav class="nav-group">${navItem('team', 'Team', 'users')}${navItem('knowledge', 'Knowledge base', 'book')}</nav><div class="sidebar-bottom"><div class="sidebar-note">${icon('spark')}<strong>Context makes better support.</strong><p>Asset ownership and documentation, connected to every ticket.</p><button class="sidebar-knowledge-link" data-nav="knowledge">Explore knowledge base ${icon('arrow')}</button></div><div class="profile">${avatar(user.name)}<div><div class="profile-name">${esc(user.name)}</div><div class="profile-role">${esc(user.role === 'admin' ? 'Workspace admin' : 'Technician')}</div></div><button class="icon-button" data-action="logout" aria-label="Sign out" title="Sign out">${icon('logout')}</button></div></div></aside><header class="topbar"><button class="icon-button mobile-menu" data-action="menu" aria-label="Open navigation">${icon('menu')}</button><div class="breadcrumbs"><span class="workspace-breadcrumb muted">Workspace</span><span class="crumb-separator">${icon('chevron')}</span><span id="breadcrumb-current">Overview</span></div><form class="global-search" id="search-form" role="search">${icon('search')}<label class="sr-only" for="global-search">Search tickets</label><input id="global-search" type="search" placeholder="Search tickets, people, IDs…" value="${esc(state.search)}" autocomplete="off"><kbd>/</kbd></form><div class="topbar-divider"></div>${avatar(user.name)}</header><main class="main" id="main-content">${loadingPanel()}</main></div>`;
+  app.innerHTML = `<div class="shell"><button class="sidebar-mobile-overlay" aria-label="Close navigation" data-action="menu"></button><aside class="sidebar" aria-label="Main navigation"><a href="#overview" class="brand" data-nav="overview"><span class="brand-mark">${icon('ticket')}</span>AssetDesk</a><div class="workspace-switch"><span class="workspace-icon">IT</span><div class="workspace-label">IT workspace<small>Support, together.</small></div></div><div class="sidebar-group-label">Workspace</div><nav class="nav-group">${navItem('overview', 'Overview', 'grid')}${navItem('tickets', 'All tickets', 'ticket', state.dashboard?.stats?.open ?? 0)}${navItem('my-tickets', 'My tickets', 'inbox')}${navItem('assets', 'Assets', 'laptop')}${navItem('actions', 'Actions', 'spark')}${navItem('reports', 'Reports', 'reports')}</nav><div class="sidebar-group-label">Organization</div><nav class="nav-group">${navItem('team', 'Team', 'users')}${navItem('knowledge', 'Knowledge base', 'book')}</nav><div class="sidebar-bottom"><div class="sidebar-note">${icon('spark')}<strong>Context makes better support.</strong><p>Asset ownership and documentation, connected to every ticket.</p><button class="sidebar-knowledge-link" data-nav="knowledge">Explore knowledge base ${icon('arrow')}</button></div><div class="profile">${avatar(user.name)}<div><div class="profile-name">${esc(user.name)}</div><div class="profile-role">${esc(user.role === 'admin' ? 'Workspace admin' : 'Technician')}</div></div><button class="icon-button" data-action="logout" aria-label="Sign out" title="Sign out">${icon('logout')}</button></div></div></aside><header class="topbar"><button class="icon-button mobile-menu" data-action="menu" aria-label="Open navigation">${icon('menu')}</button><div class="breadcrumbs"><span class="workspace-breadcrumb muted">Workspace</span><span class="crumb-separator">${icon('chevron')}</span><span id="breadcrumb-current">Overview</span></div><form class="global-search" id="search-form" role="search">${icon('search')}<label class="sr-only" for="global-search">Search tickets</label><input id="global-search" type="search" placeholder="Search tickets, people, IDs…" value="${esc(state.search)}" autocomplete="off"><kbd>/</kbd></form><div class="topbar-divider"></div>${avatar(user.name)}</header><main class="main" id="main-content">${loadingPanel()}</main></div>`;
   $('#search-form').addEventListener('submit', event => { event.preventDefault(); runSearch(); });
   let searchTimer;
   $('#global-search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 350); });
@@ -116,10 +119,11 @@ function runSearch() {
   else refresh();
 }
 function navigate(view, clearSearch = true) {
-  if (!['overview', 'tickets', 'my-tickets', 'assets', 'team', 'knowledge', 'actions'].includes(view)) return;
+  if (!['overview', 'tickets', 'my-tickets', 'assets', 'team', 'knowledge', 'actions', 'reports'].includes(view)) return;
   if (!mayLeaveArticle()) return;
   state.article = null; state.articleTarget = null; state.articleEditing = false; state.articleDirty = false; state.asset = null; state.assetTarget = null;
   closeDialogs();
+  state.generation++;
   state.current = view; state.view = 'all'; state.offset = 0; state.status = ''; state.priority = ''; state.category = ''; state.assignee = ''; state.filtersOpen = false;
   if (clearSearch) { state.search = ''; const input = $('#global-search'); if (input) input.value = ''; }
   location.hash = view;
@@ -127,12 +131,13 @@ function navigate(view, clearSearch = true) {
   document.querySelectorAll('[data-nav]').forEach(button => { const active = button.dataset.nav === view; button.classList.toggle('active', active); if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); });
   refresh();
 }
-function currentTitle() { return ({ overview: 'Overview', tickets: 'All tickets', 'my-tickets': 'My tickets', assets: 'Assets', team: 'Team', knowledge: 'Knowledge base', actions: 'Actions' })[state.current]; }
+function currentTitle() { return ({ overview: 'Overview', tickets: 'All tickets', 'my-tickets': 'My tickets', assets: 'Assets', team: 'Team', knowledge: 'Knowledge base', actions: 'Actions', reports: 'Reports' })[state.current]; }
 async function refresh({ quiet = false } = {}) {
   if (!state.session) return;
   if (state.current === 'knowledge') { if (!state.article && !state.articleEditing) await loadKnowledge(); return; }
   if (state.current === 'assets') { if (state.asset) await openAsset(state.asset.id, { quiet: true }); else await loadAssets(); return; }
   if (state.current === 'actions') { renderActions(); return; }
+  if (state.current === 'reports') { if (!quiet) { renderReports(); await loadReports(); } return; }
   const generation = ++state.generation;
   if (!quiet && !state.dashboard) $('#main-content').innerHTML = loadingPanel();
   const params = new URLSearchParams({ view: state.view, sort: state.sort, limit: '20', offset: String(state.offset) });
@@ -154,6 +159,7 @@ function renderContent() {
   if (state.current === 'knowledge') { renderKnowledge(); return; }
   if (state.current === 'assets') { renderAssetInventory(); return; }
   if (state.current === 'actions') { renderActions(); return; }
+  if (state.current === 'reports') { renderReports(); return; }
   $('#breadcrumb-current').textContent = currentTitle();
   document.title = `${currentTitle()} · AssetDesk`;
   const first = state.session.user.name.split(' ')[0];
@@ -395,7 +401,7 @@ document.addEventListener('click', async event => {
   const view = event.target.closest('[data-view]'); if (view) { state.view = view.dataset.view; state.offset = 0; if (!['overview', 'tickets', 'my-tickets'].includes(state.current)) state.current = 'tickets'; await refresh({ quiet: true }); return; }
   const action = event.target.closest('[data-action]')?.dataset.action;
   if (action === 'menu') $('.shell')?.classList.toggle('menu-open');
-  else if (action === 'logout') { try { await api('/api/desk/logout', { method: 'POST', body: {} }); state.session = null; state.dashboard = null; closeDialogs(); renderLogin(); } catch (error) { toast(error.message, true); } }
+  else if (action === 'logout') { try { await api('/api/desk/logout', { method: 'POST', body: {} }); state.session = null; state.dashboard = null; state.reports = newReportState(); closeDialogs(); renderLogin(); } catch (error) { toast(error.message, true); } }
   else if (action === 'refresh') refresh({ quiet: true });
   else if (action === 'new-ticket') openNewTicket();
   else if (action === 'new-technician') openTechnician();
@@ -433,7 +439,7 @@ document.addEventListener('keydown', event => {
 modal.addEventListener('close', () => { if (modal.dataset.responseLibrary === 'true' && drawer.open && state.ticket) reloadTicket({ preserveEdits: true }).catch(error => toast(error.message, true)); });
 for (const dialog of [modal, drawer]) dialog.addEventListener('click', event => { if (event.target === dialog) { const box = dialog.getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close(); } });
 async function boot() {
-  try { state.session = await api('/api/desk/session'); const initial = location.hash.slice(1); if (['overview', 'tickets', 'my-tickets', 'assets', 'team', 'knowledge', 'actions'].includes(initial)) state.current = initial; renderShell(); await restoreLocation(); }
+  try { state.session = await api('/api/desk/session'); const initial = location.hash.slice(1); if (['overview', 'tickets', 'my-tickets', 'assets', 'team', 'knowledge', 'actions', 'reports'].includes(initial)) state.current = initial; renderShell(); await restoreLocation(); }
   catch (error) { if (!state.session) renderLogin(error.status === 401 ? '' : 'Your workspace could not be reached. Please try again.'); }
 }
 boot();
@@ -453,7 +459,7 @@ window.addEventListener('hashchange', () => {
   const ticket = location.hash.match(/^#tickets\/([^/]+)$/);
   if (ticket) { if (!drawer.open || drawer.dataset.ticketKey !== decodeURIComponent(ticket[1])) { activateView('tickets'); refresh({ quiet: true }); openTicket(decodeURIComponent(ticket[1])); } return; }
   const view = location.hash.slice(1);
-  if (['overview', 'tickets', 'my-tickets', 'assets', 'team', 'knowledge', 'actions'].includes(view) && (view !== state.current || state.article || state.articleEditing || state.asset)) navigate(view);
+  if (['overview', 'tickets', 'my-tickets', 'assets', 'team', 'knowledge', 'actions', 'reports'].includes(view) && (view !== state.current || state.article || state.articleEditing || state.asset)) navigate(view);
 });
 
 // Native knowledge and inventory share the current AssetDesk session.
@@ -488,7 +494,7 @@ function mayLeaveArticle() {
   return !state.articleEditing || !state.articleDirty || window.confirm('Discard your unsaved article changes?');
 }
 function activateView(view) {
-  state.current = view; closeDialogs(); $('.shell')?.classList.remove('menu-open');
+  state.generation++; state.current = view; closeDialogs(); $('.shell')?.classList.remove('menu-open');
   document.querySelectorAll('[data-nav]').forEach(button => { const active = button.dataset.nav === view; button.classList.toggle('active', active); if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); });
   $('#breadcrumb-current').textContent = currentTitle();
 }
@@ -711,3 +717,100 @@ document.addEventListener('click', event => {
   if (category) { state.knowledgeCategory = category.dataset.knowledgeCategory; state.knowledgeOffset = 0; state.article = null; loadKnowledge(); }
 });
 window.addEventListener('beforeunload', event => { if (state.articleEditing && state.articleDirty) { event.preventDefault(); event.returnValue = ''; } });
+
+// Reports keep draft controls separate from the last applied search so exports
+// always match the result set the technician has actually reviewed.
+const reportDateLabels = { created_at: 'Date submitted', updated_at: 'Last updated', first_response_at: 'First response recorded', resolved_at: 'Date resolved', response_due_at: 'Response due', resolution_due_at: 'Resolution due' };
+const reportSortLabels = { newest: 'Submitted: newest first', oldest: 'Submitted: oldest first', updated: 'Most recently updated', priority: 'Priority', due: 'Next SLA due', requester: 'Requester' };
+const reportSlaLabels = { pending: 'Pending', overdue: 'Overdue', met: 'Met', breached: 'Breached' };
+function reportInput(name, label, { type = 'text', placeholder = '', wide = false } = {}) {
+  return `<div class="field${wide ? ' report-wide' : ''}"><label for="report-${name}">${label}</label><input class="input" id="report-${name}" name="${name}" type="${type}" value="${esc(state.reports.draft[name] || '')}"${placeholder ? ` placeholder="${esc(placeholder)}"` : ''}${type === 'number' ? ` min="0" step="${name.includes('_count_') ? '1' : 'any'}"` : type === 'text' ? ' maxlength="200"' : ''}></div>`;
+}
+function reportSelect(name, label, values, allLabel = 'Any') {
+  return `<div class="field"><label for="report-${name}">${label}</label><select id="report-${name}" name="${name}">${allLabel !== null ? `<option value="">${allLabel}</option>` : ''}${options(values, state.reports.draft[name])}</select></div>`;
+}
+function reportTechnicianOptions() {
+  const selected = state.reports.draft.assignee || '';
+  return `<option value="">All technicians</option><option value="unassigned"${selected === 'unassigned' ? ' selected' : ''}>Unassigned</option>${state.reports.technicians.map(person => `<option value="${esc(person.id)}"${selected === person.id ? ' selected' : ''}>${esc(person.name)}${person.active ? '' : ' (inactive)'}</option>`).join('')}`;
+}
+function reportDraft(form) {
+  return Object.fromEntries([...new FormData(form)].map(([name, value]) => [name, value.trim()]).filter(([, value]) => value !== ''));
+}
+function reportSignature(filters) { return JSON.stringify(Object.entries(filters).filter(([, value]) => value !== '').sort(([a], [b]) => a.localeCompare(b))); }
+function updateReportDraft() {
+  const form = $('#report-filters'); if (!form) return;
+  const report = state.reports; report.draft = reportDraft(form);
+  const dirty = reportSignature(report.draft) !== reportSignature(report.applied);
+  $('#report-draft-status').textContent = dirty ? 'Filters changed. Search to update the results. CSV export uses your last search.' : 'Search applies all filters together. CSV export includes every matching ticket.';
+  $('#report-draft-status').classList.toggle('report-dirty', dirty);
+}
+function renderReports() {
+  const report = state.reports;
+  $('#breadcrumb-current').textContent = 'Reports'; document.title = 'Reports · AssetDesk';
+  $('#main-content').innerHTML = `<div class="page-heading report-page-heading"><div><div class="eyebrow">Explore your support history</div><h1>Reports</h1><p>Find the tickets you need, then export the complete results.</p></div></div><section class="panel report-search-panel" aria-label="Ticket report search"><header class="panel-header"><div><h2 class="panel-title">Find tickets</h2><p class="panel-subtitle">Combine filters to answer a specific question about your support desk.</p></div><span class="report-access-note">${icon('shield')}Your workspace access applies</span></header><form id="report-filters" aria-label="Ticket report filters"><div class="report-filter-grid">${reportInput('search', 'Search tickets', { placeholder: 'Ticket ID, requester, subject, notes…', wide: true })}${reportSelect('date_field', 'Date field', reportDateLabels, null)}<div class="report-date-note">${icon('calendar')}Dates include the whole selected day in UTC.</div>${reportInput('date_from', 'From date (UTC)', { type: 'date' })}${reportInput('date_to', 'Through date (UTC)', { type: 'date' })}${reportSelect('category', 'Type / category', categoryLabels, 'All types / categories')}${reportSelect('status', 'Status', statusLabels, 'All statuses')}${reportSelect('priority', 'Priority', priorityLabels, 'All priorities')}<div class="field"><label for="report-assignee">Technician</label><select id="report-assignee" name="assignee">${reportTechnicianOptions()}</select></div>${reportSelect('source', 'Source', { email: 'Email', manual: 'Manual' }, 'All sources')}${reportInput('asset', 'Linked asset', { placeholder: 'Asset ID or name' })}</div><details class="report-advanced"${report.advanced ? ' open' : ''}><summary>${icon('filter')}Advanced filters<span>Ticket details, assets, response times & SLA</span>${icon('down')}</summary><div class="report-advanced-body"><h3>Ticket details</h3><div class="report-filter-grid">${reportInput('ticket_key', 'Ticket ID')}${reportInput('subject', 'Subject contains')}${reportInput('description', 'Description contains')}${reportInput('requester', 'Requester contains', { placeholder: 'Name or email address' })}${reportInput('resolution', 'Resolution contains')}${reportInput('note', 'Note contains', { placeholder: 'Internal note or email text' })}${reportSelect('asset_type', 'Asset type', assetTypeLabels, 'All asset types')}${reportSelect('has_assets', 'Has linked assets', { yes: 'Yes', no: 'No' }, 'Either')}</div><h3>Response & resolution</h3><div class="report-filter-grid">${reportSelect('response_state', 'First response', { recorded: 'Recorded', unrecorded: 'Not recorded' }, 'Either')}${reportSelect('resolution_state', 'Resolved date', { recorded: 'Recorded', unrecorded: 'Not recorded' }, 'Either')}${reportSelect('response_sla', 'Response SLA', reportSlaLabels, 'Any response SLA')}${reportSelect('resolution_sla', 'Resolution SLA', reportSlaLabels, 'Any resolution SLA')}${reportInput('response_minutes_min', 'Min. response minutes', { type: 'number' })}${reportInput('response_minutes_max', 'Max. response minutes', { type: 'number' })}${reportInput('resolution_minutes_min', 'Min. resolution minutes', { type: 'number' })}${reportInput('resolution_minutes_max', 'Max. resolution minutes', { type: 'number' })}${reportInput('note_count_min', 'Min. internal notes', { type: 'number' })}${reportInput('note_count_max', 'Max. internal notes', { type: 'number' })}${reportInput('email_count_min', 'Min. email replies', { type: 'number' })}${reportInput('email_count_max', 'Max. email replies', { type: 'number' })}${reportInput('asset_count_min', 'Min. linked assets', { type: 'number' })}${reportInput('asset_count_max', 'Max. linked assets', { type: 'number' })}</div><p class="report-filter-help">Response and resolution minutes measure completed milestones from submission. Asset filters and counts include only records you can access. Pending SLA targets have no completed milestone; overdue targets are still active and past due.</p></div></details><div class="report-form-footer"><div class="report-sort-controls">${reportSelect('sort', 'Sort results', reportSortLabels, null)}${reportSelect('limit', 'Results per page', { 25: '25 tickets', 50: '50 tickets', 100: '100 tickets' }, null)}</div><div class="report-search-actions"><button class="btn" type="button" id="report-clear">Clear filters</button><button class="btn primary" type="submit">${icon('search')}Search tickets</button></div></div><p class="report-draft-status" id="report-draft-status" role="status"></p></form></section><section class="panel report-results" id="report-results" aria-label="Ticket report results"></section>`;
+  const form = $('#report-filters');
+  form.addEventListener('input', updateReportDraft); form.addEventListener('change', updateReportDraft);
+  $('.report-advanced').addEventListener('toggle', event => { state.reports.advanced = event.currentTarget.open; });
+  form.addEventListener('submit', event => { event.preventDefault(); updateReportDraft(); report.applied = { ...report.draft }; report.offset = 0; updateReportDraft(); loadReports(); });
+  $('#report-clear').addEventListener('click', () => { const defaults = newReportState(); report.draft = defaults.draft; report.applied = defaults.applied; report.offset = 0; report.advanced = false; renderReports(); loadReports(); });
+  updateReportDraft(); renderReportResults();
+}
+function reportQuery({ exportCsv = false } = {}) {
+  const report = state.reports, params = new URLSearchParams(report.applied);
+  if (exportCsv) { params.delete('limit'); params.delete('offset'); }
+  else params.set('offset', String(report.offset));
+  return params;
+}
+async function loadReports() {
+  const report = state.reports, generation = ++report.generation;
+  if (state.current !== 'reports' || !state.session) return;
+  report.loading = true; report.error = ''; renderReportResults();
+  try {
+    const [result, choices] = await Promise.all([api(`/api/desk/reports/tickets?${reportQuery()}`), report.initialized ? null : api('/api/desk/reports/options')]);
+    if (state.current !== 'reports' || !state.session || state.reports !== report || generation !== report.generation) return;
+    report.tickets = result.tickets || []; report.total = result.total || 0; report.limit = result.limit || Number(report.applied.limit || 25);
+    report.initialized = true; report.loading = false;
+    if (choices) { report.technicians = choices.technicians || []; state.technicians = report.technicians; const select = $('#report-assignee'); if (select) select.innerHTML = reportTechnicianOptions(); }
+    renderReportResults();
+  } catch (error) {
+    if (state.current !== 'reports' || !state.session || state.reports !== report || generation !== report.generation) return;
+    report.loading = false; report.error = error.message; renderReportResults();
+  }
+}
+function reportTimestamp(value) {
+  if (!value || Number.isNaN(Date.parse(value))) return '—';
+  return new Intl.DateTimeFormat(undefined, { timeZone: 'UTC', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value));
+}
+function reportMinutes(value) { return value === null || value === undefined ? '—' : `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 })} min`; }
+function reportSla(value) { return `<span class="report-sla ${Object.hasOwn(reportSlaLabels, value) ? value : 'pending'}">${esc(reportSlaLabels[value] || 'Pending')}</span>`; }
+function renderReportResults() {
+  const container = $('#report-results'); if (!container || state.current !== 'reports') return;
+  const report = state.reports;
+  const active = Object.keys(report.applied).filter(key => !['date_field', 'sort', 'limit'].includes(key)).length;
+  container.setAttribute('aria-busy', String(report.loading));
+  container.innerHTML = `<header class="panel-header report-result-header"><div><h2 class="panel-title">Search results<span class="count-badge">${report.initialized && !report.loading && !report.error ? report.total : '—'}</span></h2><p class="panel-subtitle">${active ? `${active} filter${active === 1 ? '' : 's'} applied` : 'All tickets'} · Dates shown in UTC</p></div><div class="report-export-actions"><button class="btn" type="button" id="report-refresh"${report.loading ? ' disabled' : ''} aria-label="Refresh report results">${icon('refresh')}</button><button class="btn" type="button" id="report-export"${!report.initialized || report.loading || report.error || report.exporting || report.total === 0 ? ' disabled' : ''}>${report.exporting ? '<span class="spinner"></span>Preparing CSV…' : `${icon('download')}Export CSV`}</button></div></header>${report.loading ? '<div class="table-loading"><span class="spinner"></span>Searching tickets…</div>' : report.error ? `<div class="error-panel" role="alert">${icon('alert')}<div><strong>The report could not be loaded.</strong><p>${esc(report.error)}</p></div><button class="btn" type="button" id="report-retry">Try again</button></div>` : report.tickets.length ? `<div class="report-table-scroll"><table class="report-table" aria-label="Report tickets"><thead><tr><th scope="col">Ticket / requester</th><th scope="col">Status / priority</th><th scope="col">Type / source</th><th scope="col">Technician</th><th scope="col">Submitted (UTC)</th><th scope="col">Response SLA</th><th scope="col">Resolution SLA</th><th scope="col">Assets</th><th scope="col">Activity</th></tr></thead><tbody>${report.tickets.map(ticket => `<tr><td class="report-ticket-cell"><button class="ticket-title" data-ticket="${esc(ticket.key)}">${esc(ticket.subject)}</button><div class="mono report-ticket-id">${esc(ticket.key)}</div><div class="report-cell-secondary">${esc(ticket.requester_name || ticket.requester)}</div>${ticket.requester_name ? `<div class="report-cell-secondary">${esc(ticket.requester)}</div>` : ''}</td><td>${pill(ticket.status)}<div class="report-cell-secondary">${esc(priorityLabels[ticket.priority] || cap(ticket.priority))}</div></td><td>${esc(categoryLabels[ticket.category] || cap(ticket.category))}<div class="report-cell-secondary">${ticket.source === 'manual' ? 'Manual' : 'Email'}</div></td><td>${ticket.assignee ? `<div class="person">${avatar(ticket.assignee.name)}<span>${esc(ticket.assignee.name)}</span></div>` : '<span class="muted">Unassigned</span>'}</td><td class="report-date-cell">${esc(reportTimestamp(ticket.created_at))}</td><td>${reportSla(ticket.response_sla)}<div class="report-cell-secondary">${reportMinutes(ticket.response_minutes)}</div></td><td>${reportSla(ticket.resolution_sla)}<div class="report-cell-secondary">${reportMinutes(ticket.resolution_minutes)}</div></td><td>${(ticket.assets || []).length ? ticket.assets.map(asset => `<span class="report-asset-ref" title="${esc(asset.name)}">${esc(asset.ref)}</span>`).join('') : '<span class="muted">—</span>'}</td><td><span class="nowrap">${Number(ticket.note_count || 0)} notes</span><div class="report-cell-secondary nowrap">${Number(ticket.email_count || 0)} emails</div></td></tr>`).join('')}</tbody></table></div>` : emptyState('No tickets match this search.', 'Try a wider date range, remove a filter, or clear the search.', { symbol: 'reports' })}<footer class="table-footer report-result-footer"><div><span>${report.initialized && !report.error && !report.loading && report.total ? `${report.offset + 1}–${Math.min(report.offset + report.tickets.length, report.total)} of ${report.total} tickets` : 'No results to show'}</span><small>CSV includes all matching tickets, across every page.</small></div><div class="pagination"><button class="icon-button" type="button" id="report-prev" aria-label="Previous report page"${report.loading || report.offset === 0 || report.error ? ' disabled' : ''}>${icon('left')}</button><span>Page ${Math.floor(report.offset / report.limit) + 1}</span><button class="icon-button" type="button" id="report-next" aria-label="Next report page"${report.loading || report.offset + report.limit >= report.total || report.error ? ' disabled' : ''}>${icon('chevron')}</button></div></footer>`;
+  $('#report-refresh').addEventListener('click', loadReports);
+  $('#report-retry')?.addEventListener('click', loadReports);
+  $('#report-export').addEventListener('click', exportReport);
+  $('#report-prev').addEventListener('click', () => { report.offset = Math.max(0, report.offset - report.limit); loadReports(); });
+  $('#report-next').addEventListener('click', () => { report.offset += report.limit; loadReports(); });
+}
+async function exportReport() {
+  const report = state.reports, userId = state.session?.user.id;
+  if (report.exporting || report.loading || !report.initialized || !report.total) return;
+  const query = reportQuery({ exportCsv: true }); report.exporting = true; renderReportResults();
+  try {
+    const response = await fetch(`/api/desk/reports/tickets.csv?${query}`, { credentials: 'same-origin', headers: { Accept: 'text/csv' } });
+    if (!response.ok) {
+      if (response.status === 401) { state.session = null; state.reports = newReportState(); closeDialogs(); renderLogin(); }
+      const data = await response.json().catch(() => ({})); throw new Error(data.error || 'The CSV could not be exported. Try again.');
+    }
+    const blob = await response.blob();
+    if (state.session?.user.id !== userId || state.reports !== report) return;
+    const supplied = response.headers.get('Content-Disposition')?.match(/filename="?([^";]+)"?/i)?.[1];
+    const filename = supplied && /^[A-Za-z0-9_.-]+\.csv$/.test(supplied) ? supplied : 'assetdesk-tickets.csv';
+    const url = URL.createObjectURL(blob), link = document.createElement('a'); link.href = url; link.download = filename; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('CSV exported with all matching tickets.');
+  } catch (error) { if (state.session?.user.id === userId) toast(error.message, true); }
+  finally { report.exporting = false; if (state.reports === report) renderReportResults(); }
+}
