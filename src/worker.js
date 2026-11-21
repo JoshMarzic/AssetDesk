@@ -1,8 +1,8 @@
 /** Local, durable email intake. Knowledge and inventory share the same database. */
 export class Worker {
-  constructor({ store, desk, workspace, supportEmails = [], logger = console }) {
+  constructor({ store, desk, workspace, supportEmails = [], logger = console, ai }) {
     if (!store || !desk || !workspace) throw new Error('Store, DeskStore, and WorkspaceStore are required.');
-    Object.assign(this, { store, desk, workspace, supportEmails, logger });
+    Object.assign(this, { store, desk, workspace, supportEmails, logger, ai });
     this.stopping = false;
     this.running = false;
   }
@@ -43,6 +43,8 @@ export class Worker {
       }
       this.store.bind(row.id, ticket.key);
       this.store.complete(row.id, ticket.key);
+      try { this.ai?.enqueue(ticket.key, { receipt_id: row.id, source: message.desk?.source || 'email', is_reply: isReply, auto_reply_allowed: message.autoReplyAllowed !== false }); }
+      catch { this.logger.error?.({ ticket: ticket.key, error: 'AI review could not be queued.' }); }
       return ticket;
     });
   }

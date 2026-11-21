@@ -8,6 +8,9 @@ import { ActionsRunner } from './actions-runner.js';
 import { ActionTransports } from './action-transports.js';
 import { createApprovalRouter } from './actions-routes.js';
 import { WorkflowsStore } from './workflows-store.js';
+import { AiSettings } from './ai-settings.js';
+import { AiProviders } from './ai-provider.js';
+import { AiService } from './ai-service.js';
 
 function authorized(token) {
   return (req, res, next) => {
@@ -21,7 +24,7 @@ function authorized(token) {
   };
 }
 
-export function createApp({ store, worker, workspace, config, desk, actions, actionRunner, actionTransports, workflows }) {
+export function createApp({ store, worker, workspace, config, desk, actions, actionRunner, actionTransports, workflows, aiSettings, aiProviders, aiService }) {
   const app = express();
   app.set('trust proxy', config.trustProxyHops || false);
   app.disable('x-powered-by');
@@ -39,11 +42,17 @@ export function createApp({ store, worker, workspace, config, desk, actions, act
     workflows ||= new WorkflowsStore(actions);
     actionTransports ||= new ActionTransports(config.actions);
     actionRunner ||= new ActionsRunner({ actions, transports: actionTransports });
+    aiSettings ||= new AiSettings(desk.db, { encryptionKey: config.aiEncryptionKey || config.adminToken });
+    aiProviders ||= new AiProviders();
+    aiService ||= new AiService({ desk, workspace, settings: aiSettings, providers: aiProviders, mail: actionTransports, supportEmails: [...(config.supportEmails || []), config.actions?.smtp?.from].filter(Boolean) });
+    worker.ai = aiService;
     app.locals.actions = actions;
     app.locals.workflows = workflows;
     app.locals.actionRunner = actionRunner;
+    app.locals.aiSettings = aiSettings;
+    app.locals.aiService = aiService;
     app.use('/approve', createApprovalRouter({ actions, runner: actionRunner, publicUrl: config.actions?.publicUrl }));
-    app.use('/api/desk', createDeskRouter({ desk, store, worker, workspace, config, actions, actionRunner, actionTransports, workflows }));
+    app.use('/api/desk', createDeskRouter({ desk, store, worker, workspace, config, actions, actionRunner, actionTransports, workflows, aiSettings, aiProviders, aiService }));
   }
   app.use(express.static(fileURLToPath(new URL('../public', import.meta.url)), { index: 'index.html', maxAge: 0 }));
   app.get('/healthz', (_req, res) => res.json({ status: 'ok' }));

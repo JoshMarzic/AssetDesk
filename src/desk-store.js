@@ -35,6 +35,7 @@ function email(value) {
   if (!/^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(result)) throw error('Enter a valid email address.');
   return result;
 }
+function ticketLocation(value) { return value === null ? '' : text(value, 'Location', 300, { empty: true }); }
 function password(value) {
   if (typeof value !== 'string' || value.length < 12 || value.length > 256) throw error('Passwords must contain 12 to 256 characters.');
   return value;
@@ -55,7 +56,7 @@ export class DeskStore {
       status: "TEXT NOT NULL DEFAULT 'open'", priority: "TEXT NOT NULL DEFAULT 'normal'", category: "TEXT NOT NULL DEFAULT 'general'",
       assignee_id: 'TEXT', updated_at: 'TEXT', response_due_at: 'TEXT', resolution_due_at: 'TEXT',
       first_response_at: 'TEXT', resolved_at: 'TEXT', version: 'INTEGER NOT NULL DEFAULT 1',
-      source: "TEXT NOT NULL DEFAULT 'email'", resolution: "TEXT NOT NULL DEFAULT ''",
+      source: "TEXT NOT NULL DEFAULT 'email'", resolution: "TEXT NOT NULL DEFAULT ''", location: "TEXT NOT NULL DEFAULT ''",
     };
     this.db.exec('BEGIN IMMEDIATE');
     try {
@@ -317,7 +318,7 @@ export class DeskStore {
     });
   }
   updateTicket(key, patch, { actor, version } = {}) {
-    const allowed = ['subject', 'status', 'priority', 'category', 'assignee_id', 'resolution', 'first_response'];
+    const allowed = ['subject', 'location', 'status', 'priority', 'category', 'assignee_id', 'resolution', 'first_response'];
     if (!patch || typeof patch !== 'object' || Array.isArray(patch) || !Object.keys(patch).length || Object.keys(patch).some(field => !allowed.includes(field))) throw error('Unsupported ticket field.');
     return this.transaction(() => {
       const row = this.db.prepare('SELECT * FROM tickets WHERE key=?').get(key);
@@ -331,6 +332,7 @@ export class DeskStore {
         }
       }
       if (patch.subject !== undefined) values.subject = text(patch.subject, 'Subject', 240);
+      if (patch.location !== undefined) values.location = ticketLocation(patch.location);
       if (patch.assignee_id !== undefined) {
         if (patch.assignee_id !== null && patch.assignee_id !== row.assignee_id && !this.user(patch.assignee_id)?.active) throw error('Assign an active technician or leave this ticket unassigned.');
         values.assignee_id = patch.assignee_id;
@@ -347,9 +349,9 @@ export class DeskStore {
       if (patch.first_response !== undefined && patch.first_response !== true) throw error('First response can only be marked complete.');
       if (patch.first_response === true && !row.first_response_at) values.first_response_at = now();
       if (values.priority !== row.priority) Object.assign(values, this.settings.sla(row.created_at, values.priority));
-      this.db.prepare(`UPDATE tickets SET subject=?,status=?,priority=?,category=?,assignee_id=?,resolution=?,resolved_at=?,first_response_at=?,response_due_at=?,resolution_due_at=?,updated_at=?,version=version+1 WHERE key=?`)
-        .run(values.subject, values.status, values.priority, values.category, values.assignee_id, values.resolution, values.resolved_at, values.first_response_at, values.response_due_at, values.resolution_due_at, now(), key);
-      for (const field of ['subject', 'status', 'priority', 'category', 'assignee_id']) {
+      this.db.prepare(`UPDATE tickets SET subject=?,location=?,status=?,priority=?,category=?,assignee_id=?,resolution=?,resolved_at=?,first_response_at=?,response_due_at=?,resolution_due_at=?,updated_at=?,version=version+1 WHERE key=?`)
+        .run(values.subject, values.location, values.status, values.priority, values.category, values.assignee_id, values.resolution, values.resolved_at, values.first_response_at, values.response_due_at, values.resolution_due_at, now(), key);
+      for (const field of ['subject', 'location', 'status', 'priority', 'category', 'assignee_id']) {
         if (values[field] === row[field]) continue;
         const label = field === 'assignee_id' ? 'Assignee' : field[0].toUpperCase() + field.slice(1);
         const from = field === 'assignee_id' ? this.user(row[field])?.name ?? 'Unassigned' : row[field];
@@ -401,9 +403,10 @@ export class DeskStore {
           this.settings.validateChoice('priorities', priority);
           this.settings.validateChoice('categories', category);
           initialAssignee = message.desk?.assignee_id && this.user(message.desk.assignee_id)?.active ? message.desk.assignee_id : null;
+          const initialLocation = message.desk?.location === undefined ? null : ticketLocation(message.desk.location);
           const due = this.settings.sla(original.created_at, priority);
-          this.db.prepare('UPDATE tickets SET priority=?,category=?,assignee_id=?,response_due_at=?,resolution_due_at=? WHERE key=?')
-            .run(priority, category, initialAssignee, due.response_due_at, due.resolution_due_at, key);
+          this.db.prepare('UPDATE tickets SET priority=?,category=?,assignee_id=?,location=COALESCE(?,location),response_due_at=?,resolution_due_at=? WHERE key=?')
+            .run(priority, category, initialAssignee, initialLocation, due.response_due_at, due.resolution_due_at, key);
         }
         const actor = source === 'manual' && message.desk?.actor ? message.desk.actor : { name: message.from?.name || message.from?.address || 'Requester' };
         this.event(key, 'created', source === 'manual' ? 'Ticket created manually' : 'Ticket received by email', actor);

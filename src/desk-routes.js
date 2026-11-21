@@ -11,6 +11,10 @@ import { ActionsRunner } from './actions-runner.js';
 import { ActionTransports } from './action-transports.js';
 import { createActionsRouter } from './actions-routes.js';
 import { WorkflowsStore } from './workflows-store.js';
+import { AiSettings } from './ai-settings.js';
+import { AiProviders } from './ai-provider.js';
+import { AiService } from './ai-service.js';
+import { createAiSettingsRouter, createAiTicketRouter } from './ai-routes.js';
 
 const COOKIE = 'assetdesk_session';
 const SESSION_MS = 8 * 60 * 60 * 1000;
@@ -59,11 +63,15 @@ function onlyFields(body, allowed) {
 }
 
 /** Browser session API. The mail/API bearer credentials never enter the UI. */
-export function createDeskRouter({ desk, store, worker, config, workspace, actions, actionRunner, actionTransports, workflows }) {
+export function createDeskRouter({ desk, store, worker, config, workspace, actions, actionRunner, actionTransports, workflows, aiSettings, aiProviders, aiService }) {
   actions ||= new ActionsStore(desk);
   workflows ||= new WorkflowsStore(actions);
   actionTransports ||= new ActionTransports(config.actions);
   actionRunner ||= new ActionsRunner({ actions, transports: actionTransports });
+  aiSettings ||= new AiSettings(desk.db, { encryptionKey: config.aiEncryptionKey || config.adminToken });
+  aiProviders ||= new AiProviders();
+  aiService ||= new AiService({ desk, workspace, settings: aiSettings, providers: aiProviders, mail: actionTransports, supportEmails: [...(config.supportEmails || []), config.actions?.smtp?.from].filter(Boolean) });
+  if (worker) worker.ai = aiService;
   const router = express.Router();
   const loginFailures = new Map();
   const cookieOptions = { httpOnly: true, sameSite: 'strict', secure: Boolean(config.cookieSecure), path: '/' };
@@ -136,7 +144,9 @@ export function createDeskRouter({ desk, store, worker, config, workspace, actio
   router.use('/knowledge', createKnowledgeRouter({ workspace, config }));
   router.use('/assets', createAssetsRouter({ workspace }));
   router.use('/reports', createReportsRouter({ desk, workspace }));
+  router.use('/settings/ai', createAiSettingsRouter({ settings: aiSettings, providers: aiProviders, mail: actionTransports }));
   router.use('/settings', createSettingsRouter({ desk }));
+  router.use('/tickets', createAiTicketRouter({ ai: aiService, desk }));
   router.use('/actions', createActionsRouter({ actions, runner: actionRunner, transports: actionTransports, workflows }));
   router.get('/workflow', (_req, res) => res.json(desk.settings.snapshot()));
 
@@ -154,6 +164,7 @@ export function createDeskRouter({ desk, store, worker, config, workspace, actio
     return Boolean(asset && workspace.canReadCategory(workspace.categoryRow(asset.category_id), user));
   });
   const presentTicket = (ticket, user) => ticket && ({ ...ticket,
+    ai: aiService.ticketState(ticket.key, user),
     assets: workspace.ticketAssets(ticket.key, user), related_tickets: workspace.relatedTickets(ticket.key, user),
     events: visibleEvents(ticket.events || [], user) });
   router.get('/dashboard', (req, res) => {
@@ -223,13 +234,14 @@ export function createDeskRouter({ desk, store, worker, config, workspace, actio
   });
   router.post('/tickets', async (req, res) => {
     const body = objectBody(req.body);
-    onlyFields(body, ['subject', 'requester', 'requester_name', 'description', 'priority', 'category', 'assignee_id', 'tags']);
+    onlyFields(body, ['subject', 'requester', 'requester_name', 'description', 'priority', 'category', 'assignee_id', 'tags', 'location']);
     const tags = normalizeTicketTags(body.tags === undefined ? [] : body.tags);
     const { subject, requester, description } = body;
     if (typeof subject !== 'string' || !subject.trim() || subject.length > 240 || /[\x00-\x1f\x7f]/.test(subject)
       || typeof requester !== 'string' || requester.length > 254 || !/^[^\s<>\x00-\x1f@]+@[^\s<>\x00-\x1f@]+\.[^\s<>\x00-\x1f@]+$/.test(requester)
       || typeof description !== 'string' || !description.trim() || description.length > 100_000
-      || (body.requester_name !== undefined && (typeof body.requester_name !== 'string' || body.requester_name.length > 200 || /[\x00-\x1f\x7f]/.test(body.requester_name)))) {
+      || (body.requester_name !== undefined && (typeof body.requester_name !== 'string' || body.requester_name.length > 200 || /[\x00-\x1f\x7f]/.test(body.requester_name)))
+      || (body.location !== undefined && body.location !== null && (typeof body.location !== 'string' || body.location.length > 300 || body.location.includes('\0')))) {
       throw invalid('Provide a subject, valid requester email, description, and valid ticket fields.');
     }
     if (body.priority !== undefined) desk.settings.validateChoice('priorities', body.priority);
@@ -244,6 +256,7 @@ export function createDeskRouter({ desk, store, worker, config, workspace, actio
     message.desk = {
       priority: body.priority || 'normal', category: body.category || 'general',
       assignee_id: body.assignee_id || null, source: 'manual', actor: req.deskSession.user,
+      location: body.location ?? '',
     };
     const receipt = desk.transaction(() => {
       const accepted = worker.accept(message);
@@ -265,7 +278,7 @@ export function createDeskRouter({ desk, store, worker, config, workspace, actio
   });
   router.patch('/tickets/:key', (req, res) => {
     const body = objectBody(req.body);
-    onlyFields(body, ['version', 'status', 'priority', 'category', 'assignee_id', 'subject', 'resolution', 'first_response']);
+    onlyFields(body, ['version', 'status', 'priority', 'category', 'assignee_id', 'subject', 'resolution', 'first_response', 'location']);
     if (!Number.isSafeInteger(body.version) || body.version < 1) throw invalid('The ticket version is required. Refresh and try again.');
     const { version, ...patch } = body;
     if (!Object.keys(patch).length) throw invalid('Provide a ticket change.');

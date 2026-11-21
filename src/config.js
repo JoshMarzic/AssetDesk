@@ -24,6 +24,7 @@ export function configFromEnv(env = process.env) {
     if (env[key].length < 32) throw new Error(`${key} must contain at least 32 characters.`);
   }
   if (env.INBOUND_EMAIL_TOKEN === env.ADMIN_TOKEN) throw new Error('Use separate intake and administration tokens.');
+  if (env.AI_ENCRYPTION_KEY && env.AI_ENCRYPTION_KEY.length < 32) throw new Error('AI_ENCRYPTION_KEY must contain at least 32 characters.');
   const port = Number(env.PORT ?? 3000);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be between 1 and 65535.');
   if (env.DASHBOARD_ADMIN_PASSWORD && (env.DASHBOARD_ADMIN_PASSWORD.length < 12 || env.DASHBOARD_ADMIN_PASSWORD.length > 256)) {
@@ -36,6 +37,7 @@ export function configFromEnv(env = process.env) {
   if (!Number.isInteger(trustProxyHops) || trustProxyHops < 0 || trustProxyHops > 5) throw new Error('TRUST_PROXY_HOPS must be between 0 and 5.');
   return {
     actions: actionsConfigFromEnv(env),
+    aiEncryptionKey: env.AI_ENCRYPTION_KEY || '',
     trustProxyHops,
     dashboardAdminEmail: env.DASHBOARD_ADMIN_EMAIL || 'admin@assetdesk.local',
     dashboardAdminPassword: env.DASHBOARD_ADMIN_PASSWORD || null,

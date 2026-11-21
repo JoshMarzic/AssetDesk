@@ -8,6 +8,10 @@ const CONTROLS = /[\x00-\x1f\x7f-\x9f]/;
 const SINGLE_EMAIL = /^[^\s<>@,;"\\]+@[^\s<>@,;"\\]+\.[^\s<>@,;"\\]+$/u;
 const error = (message, statusCode = 400, extra = {}) => Object.assign(new Error(message), { statusCode, safeMessage: message, ...extra });
 const plainObject = value => value && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
+function threadId(value) {
+  if (typeof value !== 'string' || !/^<[^<>\s\x00-\x1f\x7f-\x9f]{1,990}>$/u.test(value)) throw error('Provide valid email threading identifiers.');
+  return value;
+}
 function untilAborted(promise, signal) {
   if (signal.aborted) return Promise.reject(error('The external request timed out.', 504, { uncertain: true }));
   return new Promise((resolve, reject) => {
@@ -149,11 +153,21 @@ export class ActionTransports {
       connections: this.#connections.filter(connection => user?.active !== false && connection.roles.includes(user?.role)).map(({ id, name, kind, baseUrl, methods }) => ({ id, name, kind, ...(kind === 'api' ? { baseUrl } : {}), methods: [...methods] })),
       publicUrl: this.#publicUrl };
   }
-  async sendEmail({ to, subject, text, messageId } = {}) {
+  isSender(value) { return typeof value === 'string' && Boolean(this.#smtp.from) && value.trim().toLowerCase() === this.#smtp.from.toLowerCase(); }
+  async sendEmail({ to, subject, text, messageId, inReplyTo, references, autoReply } = {}) {
     const recipient = address(to, 'recipient');
     if (typeof subject !== 'string' || !subject.trim() || subject.length > 240 || CONTROLS.test(subject)) throw error('Provide a subject of at most 240 characters without control characters.');
     if (typeof text !== 'string' || !text.trim() || text.length > 100000 || text.includes('\0')) throw error('Provide an email message of at most 100000 characters.');
     if (messageId !== undefined && (typeof messageId !== 'string' || !/^<[^<>\s\x00-\x1f\x7f]{1,240}>$/.test(messageId))) throw error('Provide a valid automation message identifier.');
+    const replyId = inReplyTo === undefined ? undefined : threadId(inReplyTo);
+    let referenceIds;
+    if (references !== undefined) {
+      const values = Array.isArray(references) ? references : typeof references === 'string' ? [references] : null;
+      if (!values || values.length > 100) throw error('Provide valid email threading identifiers.');
+      referenceIds = [...new Set(values.map(threadId))];
+      if (referenceIds.join(' ').length > 8192) throw error('Email threading identifiers exceed the size limit.');
+    }
+    if (autoReply !== undefined && typeof autoReply !== 'boolean') throw error('Choose a valid automatic email setting.');
     if (!this.#smtp.host || !this.#smtp.from) throw error('Outbound email is not configured. Ask an administrator to configure SMTP.', 409, { blocked: true });
     let attempted = false;
     try {
@@ -166,7 +180,9 @@ export class ActionTransports {
       }
       attempted = true;
       const sent = await this.#mailer.sendMail({ from: this.#smtp.from, to: recipient, subject, text,
-        ...(messageId ? { messageId } : {}), envelope: { from: this.#smtp.from, to: [recipient] }, disableFileAccess: true, disableUrlAccess: true });
+        ...(messageId ? { messageId } : {}), ...(replyId ? { inReplyTo: replyId } : {}), ...(referenceIds?.length ? { references: referenceIds } : {}),
+        ...(autoReply ? { headers: { 'Auto-Submitted': 'auto-replied', 'X-Auto-Response-Suppress': 'All' } } : {}),
+        envelope: { from: this.#smtp.from, to: [recipient] }, disableFileAccess: true, disableUrlAccess: true });
       if (sent?.rejected?.length || Array.isArray(sent?.accepted) && !sent.accepted.some(value => String(value).toLowerCase() === recipient.toLowerCase())) throw error('The mail server did not accept the recipient.', 502);
       return { messageId: messageId || (typeof sent?.messageId === 'string' ? sent.messageId : '') };
     } catch (failure) {

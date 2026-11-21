@@ -55,6 +55,21 @@ test('SMTP failures are sanitized and distinguish rejected credentials from unce
   await assert.rejects(rejected.sendEmail(message), /mail server did not accept/i);
 });
 
+test('automatic ticket replies retain safe threading and fixed loop-suppression headers', async () => {
+  const sent = [];
+  const transport = new ActionTransports({ smtp: SMTP }, { createTransport: () => ({ async sendMail(mail) { sent.push(mail); return { accepted: [mail.to], messageId: mail.messageId }; } }) });
+  assert.equal(transport.isSender('  HELPDESK@example.test  '), true); assert.equal(transport.isSender('requester@example.test'), false);
+  assert.equal(new ActionTransports().isSender('helpdesk@example.test'), false);
+  await transport.sendEmail({ ...message, inReplyTo: '<original@example.test>', references: ['<ancestor@example.test>', '<original@example.test>', '<original@example.test>'], autoReply: true });
+  assert.equal(sent[0].inReplyTo, '<original@example.test>');
+  assert.deepEqual(sent[0].references, ['<ancestor@example.test>', '<original@example.test>']);
+  assert.deepEqual(sent[0].headers, { 'Auto-Submitted': 'auto-replied', 'X-Auto-Response-Suppress': 'All' });
+  assert.deepEqual(sent[0].envelope, { from: SMTP.from, to: [message.to] });
+  await transport.sendEmail(message); assert.equal(sent[1].headers, undefined); assert.equal(sent[1].inReplyTo, undefined);
+  for (const bad of [{ inReplyTo: '<original>\r\nBcc: other@example.test' }, { inReplyTo: '<first> <second>' }, { references: '<valid>\r\nInjected' }, { references: [7] }, { references: Array(101).fill('<valid>') }, { references: Array.from({ length: 10 }, (_, index) => '<' + index + 'x'.repeat(900) + '>') }, { autoReply: 'yes' }]) await assert.rejects(transport.sendEmail({ ...message, ...bad }), failure => failure.statusCode === 400);
+  assert.equal(sent.length, 2, 'Invalid threading fields must never reach SMTP.');
+});
+
 test('API calls use a configured base path, permitted role/method and JSON without exposing response bodies', async () => {
   let actual;
   const profile = { ...PROFILE, roles: ['admin', 'technician'] };

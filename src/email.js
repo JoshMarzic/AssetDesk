@@ -84,6 +84,17 @@ export async function parseRawEmail(raw, { maxBytes = 10_485_760, prefixes = DEF
   if (text.length > MAX_TEXT) throw invalid('Email body exceeds 100,000 characters.', 413);
   const subject = cleanHeader(parsed.subject || '(No subject)', 240);
   const messageId = messageIds(parsed.messageId)[0] ?? `sha256:${createHash('sha256').update(buffer).digest('hex')}`;
+  // Inspect the retained raw header lines: mailparser moves some list headers
+  // out of its generic header map, and duplicate automation headers must all
+  // permit a response rather than letting a later "no" hide an earlier one.
+  const headers = name => parsed.headerLines.filter(line => line.key === name).map(line => line.line.slice(line.line.indexOf(':') + 1).replace(/\r?\n[ \t]+/g, ' ').trim().toLowerCase());
+  const localPart = address.slice(0, address.lastIndexOf('@'));
+  const autoReplyAllowed = headers('auto-submitted').every(value => value.split(';')[0].trim() === 'no')
+    && headers('x-auto-response-suppress').every(value => !value || value === 'none' || value === 'no')
+    && !/(?:^|[\s,;])(?:bulk|junk|list)(?:$|[\s,;])/.test(headers('precedence').join(', '))
+    && !parsed.headerLines.some(line => ['list-id', 'list-unsubscribe'].includes(line.key))
+    && !parsed.headerLines.some(line => line.key === 'return-path' && /^return-path\s*:\s*<>\s*$/i.test(line.line))
+    && !/^(?:mailer-daemon|postmaster|no[-_.]?reply|do[-_.]?not[-_.]?reply)(?:[+._-].*)?$/i.test(localPart);
   return {
     messageId,
     inReplyTo: messageIds(parsed.inReplyTo).at(-1) ?? null,
@@ -91,6 +102,7 @@ export async function parseRawEmail(raw, { maxBytes = 10_485_760, prefixes = DEF
     subject,
     from: { name: cleanHeader(addresses[0].name, 200), address },
     text,
+    autoReplyAllowed,
     assetRefs: extractAssetRefs(`${subject}\n${text}`, { prefixes }),
     receivedAt: new Date().toISOString(),
   };

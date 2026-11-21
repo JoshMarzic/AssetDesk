@@ -26,6 +26,11 @@ export class Store {
         next_attempt INTEGER NOT NULL DEFAULT 0, last_error TEXT,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS ticket_outbound_messages (
+        message_id TEXT PRIMARY KEY, ticket_key TEXT NOT NULL, recipient TEXT NOT NULL,
+        created_at TEXT NOT NULL, FOREIGN KEY(ticket_key) REFERENCES tickets(key) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS ticket_outbound_ticket ON ticket_outbound_messages(ticket_key);
       CREATE INDEX IF NOT EXISTS messages_thread ON messages(message_id);
       CREATE INDEX IF NOT EXISTS messages_queue ON messages(state, next_attempt);
       CREATE INDEX IF NOT EXISTS messages_ticket ON messages(ticket_key, state);
@@ -73,8 +78,26 @@ export class Store {
         WHERE m.message_id=? AND (t.requester=? OR ?=1) ORDER BY m.rowid LIMIT 1`)
         .get(reference, message.from.address, supportEmails.includes(message.from.address) ? 1 : 0);
       if (ticket) return ticket;
+      const outbound = this.db.prepare(`SELECT t.* FROM ticket_outbound_messages m JOIN tickets t ON t.key=m.ticket_key
+        WHERE m.message_id=? AND (LOWER(t.requester)=LOWER(?) OR ?=1) LIMIT 1`)
+        .get(reference, message.from.address, supportEmails.includes(message.from.address) ? 1 : 0);
+      if (outbound) return outbound;
     }
     return null;
+  }
+  recordOutboundMessage({ messageId, ticketKey, recipient } = {}) {
+    const invalid = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode, safeMessage: message });
+    if (typeof messageId !== 'string' || !/^<[^<>\s\x00-\x1f\x7f]{1,990}>$/.test(messageId)
+      || typeof ticketKey !== 'string' || ticketKey.length > 100
+      || typeof recipient !== 'string' || recipient.length > 254 || !/^[^\s<>\x00-\x1f@]+@[^\s<>\x00-\x1f@]+\.[^\s<>\x00-\x1f@]+$/.test(recipient.trim())) throw invalid('Provide a valid ticket email reference.');
+    const ticket = this.ticket(ticketKey);
+    if (!ticket) throw invalid('Ticket not found.', 404);
+    const address = recipient.trim().toLowerCase();
+    if (address !== ticket.requester.trim().toLowerCase()) throw invalid('Automated ticket email must be addressed to the original requester.');
+    this.db.prepare('INSERT OR IGNORE INTO ticket_outbound_messages(message_id,ticket_key,recipient,created_at) VALUES(?,?,?,?)').run(messageId, ticketKey, address, new Date().toISOString());
+    const saved = this.db.prepare('SELECT message_id,ticket_key,recipient,created_at FROM ticket_outbound_messages WHERE message_id=?').get(messageId);
+    if (saved.ticket_key !== ticketKey || saved.recipient !== address) throw invalid('This outgoing email reference already belongs to another ticket.', 409);
+    return { ...saved };
   }
   awaitingThread(message, supportEmails = []) {
     for (const reference of [message.inReplyTo, ...(message.references ?? [])].filter(Boolean)) {

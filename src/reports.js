@@ -10,7 +10,7 @@ const ENUMS = Object.freeze({
   response_sla: ['pending', 'overdue', 'met', 'breached'], resolution_sla: ['pending', 'overdue', 'met', 'breached'],
   sort: ['newest', 'oldest', 'updated', 'priority', 'due', 'requester'],
 });
-const TEXT_FILTERS = ['search', 'ticket_key', 'subject', 'description', 'requester', 'resolution', 'note', 'asset', 'tag'];
+const TEXT_FILTERS = ['search', 'ticket_key', 'subject', 'description', 'requester', 'location', 'resolution', 'note', 'asset', 'tag'];
 const NUMBER_FILTERS = ['response_minutes', 'resolution_minutes', 'note_count', 'email_count', 'asset_count'];
 const CHOICES = { status: 'statuses', priority: 'priorities', category: 'categories' };
 const ALLOWED = new Set([...TEXT_FILTERS, ...Object.keys(ENUMS), ...Object.keys(CHOICES), 'assignee', 'date_from', 'date_to', 'limit', 'offset', ...NUMBER_FILTERS.flatMap(name => [`${name}_min`, `${name}_max`])]);
@@ -92,12 +92,12 @@ function queryReport(workspace, user, filters, timestamp) {
   )`;
   const args = [...access.args, timestamp], clauses = [];
   for (const name of ['status', 'priority', 'category', 'source', 'response_sla', 'resolution_sla']) if (filters[name]) { clauses.push(`r.${name}=?`); args.push(filters[name]); }
-  for (const name of ['ticket_key', 'subject', 'description', 'resolution']) if (filters[name]) { clauses.push(like(`r.${name === 'ticket_key' ? 'key' : name}`)); args.push(term(filters[name])); }
+  for (const name of ['ticket_key', 'subject', 'description', 'location', 'resolution']) if (filters[name]) { clauses.push(like(`r.${name === 'ticket_key' ? 'key' : name}`)); args.push(term(filters[name])); }
   if (filters.requester) { clauses.push(`(${like('r.requester')} OR ${like('r.requester_name')})`); args.push(term(filters.requester), term(filters.requester)); }
   if (filters.note) { clauses.push(`EXISTS(SELECT 1 FROM ticket_notes n WHERE n.ticket_key=r.key AND ${like('n.body')})`); args.push(term(filters.note)); }
   if (filters.tag) { clauses.push('EXISTS(SELECT 1 FROM ticket_tags tt WHERE tt.ticket_key=r.key AND tt.normalized=?)'); args.push(filters.tag); }
   if (filters.search) {
-    const fields = ['r.key','r.subject','r.description','r.requester','r.requester_name','r.resolution','r.assigned_name','r.assigned_email'];
+    const fields = ['r.key','r.subject','r.description','r.requester','r.requester_name','r.location','r.resolution','r.assigned_name','r.assigned_email'];
     clauses.push(`(${fields.map(like).join(' OR ')} OR EXISTS(SELECT 1 FROM ticket_notes n WHERE n.ticket_key=r.key AND ${like('n.body')}) OR EXISTS(SELECT 1 FROM visible_assets a WHERE a.ticket_key=r.key AND (${like('a.ref')} OR ${like('a.name')})) OR EXISTS(SELECT 1 FROM ticket_tags tt WHERE tt.ticket_key=r.key AND ${like('tt.normalized')}))`);
     args.push(...Array(fields.length + 3).fill(term(filters.search)));
     args.push(term(filters.search.normalize('NFKC').replace(/\s+/gu, ' ').toLowerCase()));
@@ -133,6 +133,7 @@ function presenter(desk, workspace, user) {
 const CSV_COLUMNS = [
   ['Ticket ID', t => t.key], ['Subject', t => t.subject], ['Description', t => t.description],
   ['Requester name', t => t.requester_name], ['Requester email', t => t.requester], ['Status', t => t.status],
+  ['Location', t => t.location],
   ['Priority', t => t.priority], ['Type / category', t => t.category], ['Source', t => t.source],
   ['Technician', t => t.assignee?.name], ['Technician email', t => t.assignee?.email],
   ['Submitted at (UTC)', t => t.created_at], ['Updated at (UTC)', t => t.updated_at],

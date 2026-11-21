@@ -240,3 +240,23 @@ Backups of the `intake` volume also include action templates, reusable workflow 
 Reusable workflows appear in **Actions → Workflows**. They need no additional service or configuration: a workflow expands its selected templates and nested workflows into the same durable action runner. Provisioning operations use the SMTP, API, and Power Automate connections already configured above. Check the exact account-creation request and the remote service's success semantics in each template before using real employee data. An accepted Power Automate trigger advances the local workflow once the HTTP request is accepted; use a synchronous endpoint or an AssetDesk approval/manual step when later work must wait for a separate completion decision.
 
 Workflow edits require the current version, and selected dependencies retain their reference versions. After changing a reusable template or nested workflow, edit the parent workflow, refresh its references, review the mappings, and save it before starting another run. Refresh nested dependencies from the innermost affected workflow outward. A running workflow keeps the expanded implementation captured at its start. Its pending approvals, tasks, and delays survive restarts; uncertain external operations still require explicit review before retry.
+
+## Configure AI ticket assistance
+
+After upgrading, sign in as an administrator and open **Settings → AI**. Enter an OpenAI API key, an Anthropic Claude API key, or both, and choose a model supported by your provider account. Select the active provider, save the settings, and use the connection test. Enable background AI assistance and its individual features once the connection is configured. New tickets submitted manually or through email intake are queued for review; provider requests do not block durable intake. Existing tickets can be reviewed from their AI assistance panel.
+
+The server needs outbound HTTPS access to `api.openai.com` or `api.anthropic.com`, depending on the active provider. Provider credentials and model requests remain server-side. Four prompt editors control the shared system instruction, ticket handling, requester replies, and documentation-based suggestions. Saving settings does not make a paid inference request; the connection test checks the saved credentials through the provider's model-list endpoint.
+
+Provider keys are stored with authenticated encryption in the SQLite database. By default, the encryption key is derived from the existing private `ADMIN_TOKEN`. To use a separate stable secret, add `AI_ENCRYPTION_KEY` with at least 32 characters to private `.env` **before saving provider keys**, then recreate the service:
+
+```sh
+docker compose up -d --build --wait assetdesk
+```
+
+Back up the database and the chosen encryption secret together. Changing `AI_ENCRYPTION_KEY`, or rotating `ADMIN_TOKEN` while relying on its default derivation, requires re-entering the provider keys. The public settings response includes configured-key flags, never the saved key. Blank key inputs retain a connection; use its clear control to remove it.
+
+Automatic enrichment uses shared personnel, assets, and knowledge categories. It matches the requester by email and fills an empty ticket location only when the personnel lookup is unambiguous. Existing location choices, technician tags, and asset links are preserved. Suggested fixes cite actual shared articles supplied to the model; saved guidance is withheld if its documentation changes or becomes restricted. Internal technician notes and documentation-based suggestions are not included in requester-reply prompts.
+
+**AI auto reply** is a separate setting and requires the SMTP configuration above. When enabled, a safe initial request with missing information can receive one plain-text acknowledgement and set of questions, addressed only to its original requester. Configure the inbound gateway to preserve Message-ID, In-Reply-To, References, and automatic-message headers so replies thread correctly and automatic/bulk mail can be suppressed. SMTP acceptance is recorded separately from draft, blocked, failed, or uncertain delivery. Review an uncertain send in your mail system before taking further action; it is not automatically resent after restart.
+
+The database backup now also contains AI settings, encrypted provider credentials, queued reviews, assistance results, source provenance, and outbound threading/delivery state. Use a development ticket and test mailbox to verify your chosen provider and SMTP connection before enabling automatic replies on a live support address.

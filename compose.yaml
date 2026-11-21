@@ -5,6 +5,7 @@ services:
     environment:
       INBOUND_EMAIL_TOKEN: ${INBOUND_EMAIL_TOKEN:?Run node scripts/setup.mjs}
       ADMIN_TOKEN: ${ADMIN_TOKEN:?Run node scripts/setup.mjs}
+      AI_ENCRYPTION_KEY: ${AI_ENCRYPTION_KEY:-}
       DASHBOARD_ADMIN_EMAIL: ${DASHBOARD_ADMIN_EMAIL:-admin@assetdesk.local}
       DASHBOARD_ADMIN_PASSWORD: ${DASHBOARD_ADMIN_PASSWORD:?Run node scripts/setup.mjs}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
