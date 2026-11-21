@@ -5,7 +5,7 @@ const KINDS = ['active', 'resolved', 'closed'];
 const DEFAULTS = {
   statuses: [
     ['open', 'Open', 'active'], ['in_progress', 'In progress', 'active'], ['waiting', 'Waiting', 'active'],
-    ['resolved', 'Resolved', 'resolved'], ['closed', 'Closed', 'closed'],
+    ['resolved', 'Resolved', 'resolved'], ['closed', 'Closed', 'closed'], ['paused', 'Paused', 'paused'],
   ],
   priorities: [['low', 'Low', 1, 24, 120], ['normal', 'Normal', 2, 8, 72], ['high', 'High', 3, 2, 24], ['urgent', 'Urgent', 4, 1, 8]],
   categories: [['general', 'General'], ['hardware', 'Hardware'], ['software', 'Software'], ['network', 'Network'], ['access', 'Access']],
@@ -38,9 +38,10 @@ export class WorkflowSettings {
   constructor(db) {
     this.db = db;
     this.transaction(() => {
+      const previousStatuses = db.prepare("SELECT sql FROM sqlite_schema WHERE type='table' AND name='ticket_statuses'").get();
       db.exec(`
         CREATE TABLE IF NOT EXISTS ticket_statuses (
-          id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('active','resolved','closed')),
+          id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('active','resolved','closed','paused')),
           active INTEGER NOT NULL DEFAULT 1, system INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS ticket_priorities (
@@ -54,8 +55,38 @@ export class WorkflowSettings {
         CREATE TABLE IF NOT EXISTS ticket_workflow_meta (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL);
         INSERT OR IGNORE INTO ticket_workflow_meta(id,version) VALUES(1,1);
       `);
+      // SQLite cannot alter a CHECK constraint. Rebuild within the same
+      // transaction, preserving IDs, labels, archive flags, and display order.
+      if (previousStatuses && !/['"]paused['"]/.test(previousStatuses.sql)) db.exec(`
+        CREATE TABLE ticket_statuses_with_pause (
+          id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('active','resolved','closed','paused')),
+          active INTEGER NOT NULL DEFAULT 1, system INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO ticket_statuses_with_pause(rowid,id,name,kind,active,system)
+          SELECT rowid,id,name,kind,active,system FROM ticket_statuses ORDER BY rowid;
+        DROP TABLE ticket_statuses;
+        ALTER TABLE ticket_statuses_with_pause RENAME TO ticket_statuses;
+      `);
+      const previousPaused = db.prepare("SELECT * FROM ticket_statuses WHERE id='paused'").get();
+      if (previousPaused && previousPaused.kind !== 'paused') {
+        // Older versions allowed a custom option called paused. Keep that
+        // option and its tickets separate from the new scheduled lifecycle.
+        let suffix = 0, legacyId = 'paused-legacy';
+        while (db.prepare('SELECT 1 FROM ticket_statuses WHERE id=?').get(legacyId)) legacyId = `paused-legacy-${++suffix}`;
+        db.prepare("UPDATE ticket_statuses SET id=? WHERE id='paused'").run(legacyId);
+        const ticketColumns = db.prepare('PRAGMA table_info(tickets)').all();
+        if (ticketColumns.some(column => column.name === 'status')) db.prepare("UPDATE tickets SET status=? WHERE status='paused'").run(legacyId);
+      }
       const status = db.prepare('INSERT OR IGNORE INTO ticket_statuses(id,name,kind,system) VALUES (?,?,?,1)');
-      for (const values of DEFAULTS.statuses) status.run(...values);
+      let addedPause = false;
+      for (const values of DEFAULTS.statuses) {
+        if (values[0] !== 'paused') { status.run(...values); continue; }
+        let label = values[1], suffix = 0;
+        const labels = db.prepare('SELECT id,name FROM ticket_statuses').all();
+        while (labels.some(row => row.id !== 'paused' && normalized(row.name) === normalized(label))) label = `Paused (scheduled${suffix++ ? ` ${suffix}` : ''})`;
+        addedPause = Boolean(status.run('paused', label, 'paused').changes);
+      }
+      if (previousStatuses && addedPause) db.prepare('UPDATE ticket_workflow_meta SET version=version+1 WHERE id=1').run();
       const priority = db.prepare('INSERT OR IGNORE INTO ticket_priorities(id,name,rank,response_hours,resolution_hours,system) VALUES (?,?,?,?,?,1)');
       for (const values of DEFAULTS.priorities) priority.run(...values);
       const category = db.prepare('INSERT OR IGNORE INTO ticket_categories(id,name,system) VALUES (?,?,1)');

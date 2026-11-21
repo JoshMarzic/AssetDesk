@@ -34,6 +34,8 @@ No BookStack account, API token, extra database service, or second browser login
 
 All-staff categories can allow or deny staff editing. Restricted categories use named-reader/editor grants. Editing or moving a record requires the appropriate category access. Personnel inventory records are separate from technician login accounts.
 
+To defer a ticket, choose a future **Start or delay until** date and time when creating it or in its properties, then save. The picker uses your browser's local timezone. Confirm the status is **Paused**, the ticket disappears from the default dashboard, and the **Paused** tab or status filter still finds it. When the date arrives, it automatically returns to **In progress** without needing an open browser. Schedules persist through restarts, and overdue schedules resume on startup. Clearing the date resumes early; choosing another status cancels the schedule. Pausing needs no resolution summary and preserves incoming replies and the ticket's original SLA deadlines. Paused tickets do not contribute to active overdue indicators. Reports include them and can filter/export the **Paused until** date.
+
 ## Upgrade an existing installation
 
 Keep the same checkout directory and Compose project name so the original `intake` volume is reused. Back up your private `.env` and all existing volumes before upgrading. If using the older wiki-based installation, preserve its `database` and `bookstack` volumes as well.

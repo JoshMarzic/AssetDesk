@@ -12,14 +12,16 @@ import { ActionsRunner } from '../src/actions-runner.js';
 import { WorkflowsStore } from '../src/workflows-store.js';
 import { AiSettings } from '../src/ai-settings.js';
 import { AiService } from '../src/ai-service.js';
+import { TicketScheduler } from '../src/ticket-scheduler.js';
 
 export const PASSWORD = 'Native-browser-password-2026';
 export const ADMIN_EMAIL = 'admin@example.test';
 export const TARGET_KEY = 'HD-BROWSER002';
 
-export async function harness(t, { mobile = false, actionTransports: suppliedTransports, aiProviders: suppliedAiProviders } = {}) {
+export async function harness(t, { mobile = false, timezoneId = 'UTC', actionTransports: suppliedTransports, aiProviders: suppliedAiProviders } = {}) {
   const store = new Store(':memory:');
   const desk = new DeskStore(store);
+  const ticketScheduler = new TicketScheduler({ desk });
   const admin = await desk.ensureAdmin({ name: 'Jordan Blake', email: ADMIN_EMAIL, password: PASSWORD });
   const avery = await desk.createTechnician({ name: 'Avery Chen', email: 'avery@example.test', password: PASSWORD, role: 'technician' });
   const casey = await desk.createTechnician({ name: 'Casey Morgan', email: 'casey@example.test', password: PASSWORD, role: 'technician' });
@@ -87,13 +89,14 @@ export async function harness(t, { mobile = false, actionTransports: suppliedTra
   worker.start();
   actionsRunner.start();
   aiService.start();
+  ticketScheduler.start();
   const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || (existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : undefined), headless: true, args: ['--no-sandbox'] });
-  const context = await browser.newContext(mobile ? { viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, isMobile: true, hasTouch: true } : { viewport: { width: 1440, height: 1024 }, deviceScaleFactor: 1 });
+  const context = await browser.newContext(mobile ? { timezoneId, viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, isMobile: true, hasTouch: true } : { timezoneId, viewport: { width: 1440, height: 1024 }, deviceScaleFactor: 1 });
   const page = await context.newPage(), errors = [], requests = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('request', request => requests.push(request.url()));
-  t.after(async () => { await browser.close(); await aiService.stop(); await actionsRunner.stop(); await worker.stop(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); store.close(); });
-  return { store, desk, workspace, worker, actions, actionsRunner, workflows, actionMessages, actionApiCalls, actionFlowCalls, actionTransports, aiSettings, aiService, aiProviders, aiCalls, aiConnectionTests, config, browser, context, page, errors, requests, origin, admin, avery, casey, general, assetCategory, publicCategory, privateCategory, privateAssetCategory, publicMedia, privateMedia, vpnArticle, privateArticle, person, laptop, monitor, privateAsset, restrictedPerson, visibleOwnedPC, responseTemplate };
+  t.after(async () => { ticketScheduler.stop(); await browser.close(); await aiService.stop(); await actionsRunner.stop(); await worker.stop(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); store.close(); });
+  return { store, desk, ticketScheduler, workspace, worker, actions, actionsRunner, workflows, actionMessages, actionApiCalls, actionFlowCalls, actionTransports, aiSettings, aiService, aiProviders, aiCalls, aiConnectionTests, config, browser, context, page, errors, requests, origin, admin, avery, casey, general, assetCategory, publicCategory, privateCategory, privateAssetCategory, publicMedia, privateMedia, vpnArticle, privateArticle, person, laptop, monitor, privateAsset, restrictedPerson, visibleOwnedPC, responseTemplate };
 }
 
 export async function signIn(page, origin, email = ADMIN_EMAIL) {

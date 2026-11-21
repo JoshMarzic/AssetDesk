@@ -11,10 +11,12 @@ import { WorkflowsStore } from './workflows-store.js';
 import { AiSettings } from './ai-settings.js';
 import { AiProviders } from './ai-provider.js';
 import { AiService } from './ai-service.js';
+import { TicketScheduler } from './ticket-scheduler.js';
 
 const config = configFromEnv();
 const store = new Store(config.databasePath);
 const desk = new DeskStore(store);
+const ticketScheduler = new TicketScheduler({ desk });
 const workspace = new WorkspaceStore(desk);
 if (config.dashboardAdminPassword) {
   await desk.ensureAdmin({ email: config.dashboardAdminEmail, name: 'Desk administrator', password: config.dashboardAdminPassword });
@@ -33,6 +35,7 @@ const server = app.listen(config.port, '0.0.0.0', () => {
   worker.start();
   actionRunner.start();
   aiService.start();
+  ticketScheduler.start();
 });
 server.requestTimeout = 30_000;
 server.headersTimeout = 15_000;
@@ -41,6 +44,7 @@ async function shutdown() {
   if (stopping) return;
   stopping = true;
   server.close();
+  ticketScheduler.stop();
   await worker.stop();
   await actionRunner.stop();
   await aiService.stop();

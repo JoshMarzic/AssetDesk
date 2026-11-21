@@ -5,7 +5,7 @@ import { normalizeTicketTag } from './desk-store.js';
 
 const ENUMS = Object.freeze({
   source: ['email', 'manual'], asset_type: ASSET_TYPES, has_assets: ['yes', 'no'],
-  date_field: ['created_at', 'updated_at', 'first_response_at', 'resolved_at', 'response_due_at', 'resolution_due_at'],
+  date_field: ['created_at', 'updated_at', 'first_response_at', 'resolved_at', 'response_due_at', 'resolution_due_at', 'paused_until'],
   response_state: ['recorded', 'unrecorded'], resolution_state: ['recorded', 'unrecorded'],
   response_sla: ['pending', 'overdue', 'met', 'breached'], resolution_sla: ['pending', 'overdue', 'met', 'breached'],
   sort: ['newest', 'oldest', 'updated', 'priority', 'due', 'requester'],
@@ -138,6 +138,7 @@ const CSV_COLUMNS = [
   ['Technician', t => t.assignee?.name], ['Technician email', t => t.assignee?.email],
   ['Submitted at (UTC)', t => t.created_at], ['Updated at (UTC)', t => t.updated_at],
   ['First response at (UTC)', t => t.first_response_at], ['Resolved at (UTC)', t => t.resolved_at],
+  ['Paused until (UTC)', t => t.paused_until],
   ['Response due at (UTC)', t => t.response_due_at], ['Resolution due at (UTC)', t => t.resolution_due_at],
   ['Response SLA', t => t.response_sla], ['Resolution SLA', t => t.resolution_sla],
   ['Response time (minutes)', t => t.response_minutes], ['Resolution time (minutes)', t => t.resolution_minutes],
@@ -163,6 +164,7 @@ export function createReportsRouter({ desk, workspace }) {
   router.get('/tickets', (req, res) => {
     const filters = reportFilters(req.query, desk.settings.snapshot());
     desk.initializeRows();
+    desk.resumeDueTickets();
     const query = queryReport(workspace, req.deskSession.user, filters, new Date().toISOString());
     const total = desk.db.prepare(`${query.cte} SELECT COUNT(*) AS total ${query.select}`).get(...query.args).total;
     const rows = desk.db.prepare(`${query.cte} SELECT r.* ${query.select} ORDER BY ${query.order} LIMIT ? OFFSET ?`).all(...query.args, filters.limit, filters.offset);
@@ -177,6 +179,7 @@ export function createReportsRouter({ desk, workspace }) {
     try {
       const filters = reportFilters(req.query, desk.settings.snapshot());
       desk.initializeRows();
+      desk.resumeDueTickets();
       const query = queryReport(workspace, req.deskSession.user, filters, new Date().toISOString());
       const statement = desk.db.prepare(`${query.cte} SELECT r.* ${query.select} ORDER BY ${query.order}`);
       const present = presenter(desk, workspace, req.deskSession.user);

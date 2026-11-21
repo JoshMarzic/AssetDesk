@@ -26,7 +26,7 @@ test('workflow settings initialize compatible defaults once and preserve changes
   let store = new Store(filename);
   try {
     let settings = new WorkflowSettings(store.db);
-    assert.deepEqual(settings.snapshot().statuses.map(value => value.id), ['open', 'in_progress', 'waiting', 'resolved', 'closed']);
+    assert.deepEqual(settings.snapshot().statuses.map(value => value.id), ['open', 'in_progress', 'waiting', 'resolved', 'closed', 'paused']);
     assert.equal(settings.get('priorities', 'normal').response_hours, 8);
     assert.equal(settings.get('priorities', 'urgent').resolution_hours, 8);
     update(settings, 'priorities', 'normal', { name: 'Standard support', response_hours: 3, resolution_hours: 30 });

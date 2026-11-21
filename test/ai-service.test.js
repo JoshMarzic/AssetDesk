@@ -137,16 +137,39 @@ test('reply decisions respect feature toggles, sufficient information, missing S
 });
 
 test('settings or ticket changes while a provider is pending prevent stale tags and outgoing replies', async t => {
-  for (const change of ['settings', 'ticket', 'resolution']) {
+  for (const change of ['settings', 'ticket', 'resolution', 'pause']) {
     let release, entered;
     const gate = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { entered = resolve; });
     const h = await fixture(t, { patch: { auto_tags: false, suggest_fixes: false, auto_reply: true }, review: async () => { entered(); await gate; return { needs_information: true, questions: ['What happened?'], body: 'Please share symptoms.' }; } });
     const accepted = h.worker.accept(message()); await started;
     if (change === 'settings') h.settings.update({ version: h.settings.snapshot().version, auto_reply: false }, { actor: h.admin });
-    else { const ticket = h.desk.getTicket(accepted.ticketKey); h.desk.updateTicket(ticket.key, change === 'ticket' ? { subject: 'A new clarified problem' } : { status: 'resolved', resolution: 'Fixed by technician.' }, { actor: h.admin, version: ticket.version }); }
+    else {
+      const ticket = h.desk.getTicket(accepted.ticketKey);
+      const patch = change === 'ticket' ? { subject: 'A new clarified problem' } : change === 'pause' ? { paused_until: new Date(Date.now() + 3600000).toISOString() } : { status: 'resolved', resolution: 'Fixed by technician.' };
+      h.desk.updateTicket(ticket.key, patch, { actor: h.admin, version: ticket.version });
+    }
     release(); await done(h); assert.equal(h.sent.length, 0, change);
-    assert.equal(state(h, accepted.ticketKey).status, change === 'resolution' ? 'completed' : 'blocked', change);
+    assert.equal(state(h, accepted.ticketKey).status, ['resolution', 'pause'].includes(change) ? 'completed' : 'blocked', change);
+    if (change === 'pause') {
+      assert.equal(state(h, accepted.ticketKey).reply.status, 'suppressed');
+      assert.equal(h.desk.getTicket(accepted.ticketKey).status, 'paused');
+      assert.ok(h.desk.getTicket(accepted.ticketKey).paused_until);
+    }
   }
+});
+
+test('AI enriches a scheduled ticket without ending its pause or sending an automatic requester reply', async t => {
+  const h = await fixture(t, { patch: { auto_tags: true, suggest_fixes: false, auto_reply: true } });
+  const pausedUntil = new Date(Date.now() + 3600000).toISOString();
+  const accepted = h.worker.accept(message('The VPN connection needs investigation next week.', { desk: { source: 'manual', actor: h.admin, paused_until: pausedUntil } }));
+  await done(h);
+  const ticket = h.desk.getTicket(accepted.ticketKey);
+  assert.equal(ticket.status, 'paused'); assert.equal(ticket.paused_until, pausedUntil);
+  assert.deepEqual(ticket.tags, ['network', 'VPN']);
+  assert.ok(h.calls.some(call => call.kind === 'triage'));
+  assert.ok(!h.calls.some(call => call.kind === 'reply'));
+  assert.equal(h.sent.length, 0);
+  assert.equal(state(h, ticket.key).reply.status, 'suppressed');
 });
 
 test('malformed provider outputs and invented sources cannot modify tags or expose unsupported fixes', async t => {

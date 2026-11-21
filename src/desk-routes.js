@@ -4,7 +4,7 @@ import { parseRawEmail } from './email.js';
 import { createKnowledgeRouter } from './knowledge.js';
 import { createAssetsRouter } from './workspace-routes.js';
 import { createReportsRouter } from './reports.js';
-import { normalizeTicketTags } from './desk-store.js';
+import { normalizePausedUntil, normalizeTicketTags } from './desk-store.js';
 import { createSettingsRouter } from './settings-routes.js';
 import { ActionsStore } from './actions-store.js';
 import { ActionsRunner } from './actions-runner.js';
@@ -21,7 +21,7 @@ const SESSION_MS = 8 * 60 * 60 * 1000;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const MAX_LOGIN_FAILURES = 10;
 const MAX_LOGIN_IPS = 1000;
-const VIEWS = new Set(['all', 'open', 'my', 'unassigned', 'overdue', 'resolved']);
+const VIEWS = new Set(['all', 'open', 'my', 'unassigned', 'overdue', 'resolved', 'paused']);
 
 function invalid(message, statusCode = 400) {
   const error = new Error(message);
@@ -234,8 +234,9 @@ export function createDeskRouter({ desk, store, worker, config, workspace, actio
   });
   router.post('/tickets', async (req, res) => {
     const body = objectBody(req.body);
-    onlyFields(body, ['subject', 'requester', 'requester_name', 'description', 'priority', 'category', 'assignee_id', 'tags', 'location']);
+    onlyFields(body, ['subject', 'requester', 'requester_name', 'description', 'priority', 'category', 'assignee_id', 'tags', 'location', 'paused_until']);
     const tags = normalizeTicketTags(body.tags === undefined ? [] : body.tags);
+    const pausedUntil = body.paused_until === undefined ? null : normalizePausedUntil(body.paused_until);
     const { subject, requester, description } = body;
     if (typeof subject !== 'string' || !subject.trim() || subject.length > 240 || /[\x00-\x1f\x7f]/.test(subject)
       || typeof requester !== 'string' || requester.length > 254 || !/^[^\s<>\x00-\x1f@]+@[^\s<>\x00-\x1f@]+\.[^\s<>\x00-\x1f@]+$/.test(requester)
@@ -257,6 +258,7 @@ export function createDeskRouter({ desk, store, worker, config, workspace, actio
       priority: body.priority || 'normal', category: body.category || 'general',
       assignee_id: body.assignee_id || null, source: 'manual', actor: req.deskSession.user,
       location: body.location ?? '',
+      paused_until: pausedUntil,
     };
     const receipt = desk.transaction(() => {
       const accepted = worker.accept(message);
@@ -278,7 +280,7 @@ export function createDeskRouter({ desk, store, worker, config, workspace, actio
   });
   router.patch('/tickets/:key', (req, res) => {
     const body = objectBody(req.body);
-    onlyFields(body, ['version', 'status', 'priority', 'category', 'assignee_id', 'subject', 'resolution', 'first_response', 'location']);
+    onlyFields(body, ['version', 'status', 'priority', 'category', 'assignee_id', 'subject', 'resolution', 'first_response', 'location', 'paused_until']);
     if (!Number.isSafeInteger(body.version) || body.version < 1) throw invalid('The ticket version is required. Refresh and try again.');
     const { version, ...patch } = body;
     if (!Object.keys(patch).length) throw invalid('Provide a ticket change.');

@@ -42,7 +42,9 @@ docker compose up -d --wait assetdesk
 
 Administrators create named technician accounts in Team and securely share their initial passwords. Dashboard sessions use hashed passwords, HttpOnly cookies, CSRF protection, role checks, and login rate limiting. Technicians work tickets; administrators manage accounts and category access. The application protects its last active administrator.
 
-Tickets are saved locally and open immediately. Set General/Hardware/Software/Network/Access classification, Low/Normal/High/Urgent priority, and a technician assignment. Use **Assign to me**, internal notes, and the shared response library to reduce repetitive work. Statuses are Open, In Progress, Waiting, Resolved, and Closed. Resolving requires a summary; version checks prevent silently overwriting a teammate's changes.
+Tickets are saved locally and open immediately. Set General/Hardware/Software/Network/Access classification, Low/Normal/High/Urgent priority, and a technician assignment. Use **Assign to me**, internal notes, and the shared response library to reduce repetitive work. Statuses are Open, In progress, Waiting, Paused, Resolved, and Closed. Resolving requires a summary; version checks prevent silently overwriting a teammate's changes.
+
+Use **Start or delay until** when creating or editing a ticket to select a future date and time in your browser's local timezone. Saving sets the status to **Paused**. Paused tickets are hidden from the default dashboard and ticket queues; choose the **Paused** tab or status filter to find them. Reports and direct ticket links remain available. At the selected time, the server automatically changes the ticket to **In progress**, including schedules that came due while the server was stopped. Change the date to reschedule, clear it to resume early, or choose another status to cancel the schedule. Requester email replies attach to the ticket without ending its pause.
 
 Response templates support `{{requester}}`, `{{technician}}`, `{{ticket_id}}`, and `{{subject}}`. Insert one into an internal note or copy it for your mail client. These actions do not send email. Mark first response only after contacting the requester; it records that action rather than sending a reply.
 
@@ -57,7 +59,7 @@ Response and resolution indicators use elapsed wall-clock time from original tic
 | High | 2 hours | 24 hours |
 | Urgent | 1 hour | 8 hours |
 
-Waiting does not pause the clock, and reopening retains the original deadlines. Business-hour calendars and automatic escalation are not implemented.
+Waiting does not pause the clock, and reopening retains the original deadlines. Scheduled Paused tickets are excluded from active SLA and overdue indicators while paused; resuming retains the original submission-based deadlines. Business-hour calendars and automatic escalation are not implemented.
 
 ## Native knowledge and category permissions
 
