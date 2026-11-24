@@ -82,6 +82,56 @@ test('login summaries reject malformed or oversized output and unsafe ticket ref
   ]) assert.throws(() => validateAiResult('summary', value), error => error.statusCode === 502 && !privateText.test(error.message));
 });
 
+test('related-ticket matching sends the editable prompt and strict source-reference schema through both providers', async () => {
+  const result = { recent_tickets: [{ ticket_key: 'HD-RECENT', reason: 'Both tickets report display flickering after docking.' }], asset_issues: [{ asset_id: 'asset-display-1', ticket_key: 'HD-PAST', reason: 'This same linked laptop previously had the matching display symptom.' }] };
+  for (const provider of ['openai', 'anthropic']) {
+    let actual;
+    const providers = new AiProviders({ fetchImpl: async (_url, request) => { actual = JSON.parse(request.body); return provider === 'openai' ? openai(result) : anthropic('related', result); } });
+    const supplied = input({ provider, kind: 'related', prompt: 'Find matching symptoms using only supplied ticket and asset IDs.', context: { ticket: { key: 'HD-CURRENT' }, recent_tickets: [{ ticket_key: 'HD-RECENT' }], asset_issues: [{ asset_id: 'asset-display-1', ticket_key: 'HD-PAST' }] } });
+    assert.deepEqual(await providers.review(supplied), result);
+    if (provider === 'openai') {
+      const schema = actual.response_format.json_schema;
+      assert.equal(schema.name, 'assetdesk_related'); assert.equal(schema.strict, true);
+      assert.deepEqual(schema.schema.required, ['recent_tickets', 'asset_issues']);
+      assert.deepEqual(schema.schema.properties.asset_issues.items.required, ['asset_id', 'ticket_key', 'reason']);
+      assert.equal(schema.schema.properties.asset_issues.items.additionalProperties, false);
+      assert.equal(actual.messages[1].content, supplied.prompt); assert.equal(actual.messages[2].content, JSON.stringify(supplied.context));
+    } else {
+      assert.equal(actual.tool_choice.name, 'assetdesk_related');
+      assert.deepEqual(actual.tools[0].input_schema, AI_OUTPUT_SCHEMAS.related);
+      assert.equal(actual.messages[0].content[0].text, supplied.prompt);
+      assert.equal(actual.messages[0].content[1].text, JSON.stringify(supplied.context));
+    }
+  }
+});
+
+test('related-ticket outputs reject malformed source references, extra fields, unsafe IDs, and excessive reasons before use', async () => {
+  const recent = { ticket_key: 'HD-RECENT', reason: '  Matching display symptom.\r\nCheck this issue.  ' };
+  const issue = { asset_id: 'asset-1', ticket_key: 'HD-PAST', reason: 'Matching old problem.' };
+  assert.deepEqual(validateAiResult('related', { recent_tickets: [recent], asset_issues: [issue] }), { recent_tickets: [{ ticket_key: 'HD-RECENT', reason: 'Matching display symptom.\nCheck this issue.' }], asset_issues: [issue] });
+  assert.deepEqual(validateAiResult('related', { recent_tickets: [], asset_issues: [] }), { recent_tickets: [], asset_issues: [] });
+  for (const value of [
+    { recent_tickets: [], asset_issues: [], summary: 'Unexpected narrative' },
+    { recent_tickets: null, asset_issues: [] }, { recent_tickets: [], asset_issues: {} },
+    { recent_tickets: Array(9).fill(recent), asset_issues: [] }, { recent_tickets: [], asset_issues: Array(13).fill(issue) },
+    { recent_tickets: [null], asset_issues: [] }, { recent_tickets: [[]], asset_issues: [] },
+    { recent_tickets: [{ ticket_key: 'HD-RECENT' }], asset_issues: [] },
+    { recent_tickets: [{ ...recent, url: 'https://unexpected.example.test' }], asset_issues: [] },
+    { recent_tickets: [{ ...recent, ticket_key: 'https://unexpected.example.test' }], asset_issues: [] },
+    { recent_tickets: [{ ...recent, ticket_key: '../HD-RECENT' }], asset_issues: [] },
+    { recent_tickets: [{ ...recent, ticket_key: 'HD-1\nheader' }], asset_issues: [] },
+    { recent_tickets: [{ ...recent, ticket_key: 'H'.repeat(101) }], asset_issues: [] },
+    { recent_tickets: [{ ...recent, reason: '' }], asset_issues: [] },
+    { recent_tickets: [{ ...recent, reason: 'x'.repeat(1501) }], asset_issues: [] },
+    { recent_tickets: [], asset_issues: [{ ...issue, asset_id: 'asset/<script>' }] },
+    { recent_tickets: [], asset_issues: [{ ...issue, asset_id: null }] },
+    { recent_tickets: [], asset_issues: [{ ticket_key: 'HD-PAST', reason: 'Missing asset ID' }] },
+    { recent_tickets: [], asset_issues: [{ ...issue, reason: 'bad\u0000text' }] },
+  ]) assert.throws(() => validateAiResult('related', value), error => error.statusCode === 502 && !privateText.test(error.message));
+  const echoing = new AiProviders({ fetchImpl: async () => openai({ recent_tickets: [{ ticket_key: 'HD-RECENT', reason: KEY }], asset_issues: [] }) });
+  await assert.rejects(echoing.review(input({ kind: 'related' })), error => error.statusCode === 502 && !privateText.test(error.message));
+});
+
 test('review results are fully validated before ticket changes or requester email can use them', async () => {
   assert.deepEqual(validateAiResult('triage', { tags: ['  Networking  '], asset_mentions: [] }), { tags: ['Networking'], asset_mentions: [] });
   assert.deepEqual(validateAiResult('reply', { needs_information: true, questions: ['Which error is shown?'], body: 'We received the ticket.\r\nPlease send the error.' }), { needs_information: true, questions: ['Which error is shown?'], body: 'We received the ticket.\nPlease send the error.' });

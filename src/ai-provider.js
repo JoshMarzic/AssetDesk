@@ -11,6 +11,10 @@ export const AI_OUTPUT_SCHEMAS = Object.freeze({
   reply: { type: 'object', additionalProperties: false, required: ['needs_information', 'questions', 'body'], properties: { needs_information: { type: 'boolean' }, questions: strings(8, 1000), body: string(8000) } },
   suggestions: { type: 'object', additionalProperties: false, required: ['summary', 'steps', 'article_ids'], properties: { summary: string(4000), steps: strings(12, 2000), article_ids: strings(10, 100) } },
   summary: { type: 'object', additionalProperties: false, required: ['summary', 'highlights'], properties: { summary: string(6000, 1), highlights: { type: 'array', maxItems: 8, items: { type: 'object', additionalProperties: false, required: ['ticket_key', 'text'], properties: { ticket_key: string(100, 1), text: string(1000, 1) } } } } },
+  related: { type: 'object', additionalProperties: false, required: ['recent_tickets', 'asset_issues'], properties: {
+    recent_tickets: { type: 'array', maxItems: 8, items: { type: 'object', additionalProperties: false, required: ['ticket_key', 'reason'], properties: { ticket_key: string(100, 1), reason: string(1500, 1) } } },
+    asset_issues: { type: 'array', maxItems: 12, items: { type: 'object', additionalProperties: false, required: ['asset_id', 'ticket_key', 'reason'], properties: { asset_id: string(100, 1), ticket_key: string(100, 1), reason: string(1500, 1) } } },
+  } },
 });
 
 // OpenAI structured-output support varies between model families. Keep its
@@ -67,6 +71,23 @@ export function validateAiResult(kind, input) {
       return { ticket_key, text: resultText(item.text, 1000) };
     });
     return { summary: resultText(input.summary, 6000), highlights };
+  }
+  if (kind === 'related') {
+    const references = (values, maximum, ids) => {
+      if (!Array.isArray(values) || values.length > maximum) throw fail('The AI provider returned an invalid review. Review the prompts and try again.', 502);
+      return values.map(item => {
+        const fields = [...ids, 'reason'];
+        if (!plain(item) || Object.keys(item).length !== fields.length || fields.some(key => !Object.hasOwn(item, key))) throw fail('The AI provider returned an invalid review. Review the prompts and try again.', 502);
+        const result = {};
+        for (const id of ids) {
+          const value = resultText(item[id], 100, { multiline: false });
+          if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(value)) throw fail('The AI provider returned invalid related-ticket references.', 502);
+          result[id] = value;
+        }
+        return { ...result, reason: resultText(item.reason, 1500) };
+      });
+    };
+    return { recent_tickets: references(input.recent_tickets, 8, ['ticket_key']), asset_issues: references(input.asset_issues, 12, ['asset_id', 'ticket_key']) };
   }
   const article_ids = resultList(input.article_ids, 10, 100);
   if (article_ids.some(id => !/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(id))) throw fail('The AI provider returned invalid documentation references.', 502);

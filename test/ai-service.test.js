@@ -21,7 +21,7 @@ async function fixture(t, { filename = ':memory:', patch = {}, review, mailConfi
   const admin = await desk.ensureAdmin({ name: 'AI administrator', email: 'admin@service.example.test', password });
   const technician = desk.listTechnicians().find(user => user.email === 'tech@service.example.test') || await desk.createTechnician({ name: 'Technician', email: 'tech@service.example.test', password });
   const settings = new AiSettings(store.db, { encryptionKey });
-  settings.update({ version: settings.snapshot().version, enabled: true, providers: { openai: { api_key: 'test-only-provider-key' } }, ...patch }, { actor: admin });
+  settings.update({ version: settings.snapshot().version, enabled: true, suggest_related: false, providers: { openai: { api_key: 'test-only-provider-key' } }, ...patch }, { actor: admin });
   const calls = [], sent = [];
   const providers = { async review(input) {
     calls.push(structuredClone(input));

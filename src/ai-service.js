@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { normalizeTicketTags } from './desk-store.js';
 import { validateAiResult } from './ai-provider.js';
 import { buildAiContext, sharedSourceIsCurrent, ticketInputHash } from './ai-context.js';
+import { buildRelatedContext, relatedSourcesAreCurrent, presentRelated } from './ai-related.js';
 
 const stamp = () => new Date().toISOString();
 const parse = value => value ? JSON.parse(value) : null;
@@ -9,7 +10,8 @@ const fail = (message, statusCode = 400, flags = {}) => Object.assign(new Error(
 const actor = Object.freeze({ name: 'AssetDesk AI' });
 const messageId = value => typeof value === 'string' && /^<[^<>\s\x00-\x1f]{1,990}>$/.test(value);
 const emptySuggestions = () => ({ status: 'pending', summary: '', steps: [], articles: [] });
-const emptyResult = () => ({ tags_added: [], location_set: null, assets_linked: [], suggestions: emptySuggestions(), reply: null });
+const emptyRelated = (status = 'pending', message) => ({ status, recent_tickets: [], asset_issues: [], reviewed_at: null, window: null, coverage: null, ...(message ? { message } : {}) });
+const emptyResult = () => ({ tags_added: [], location_set: null, assets_linked: [], suggestions: emptySuggestions(), related: emptyRelated(), reply: null });
 const tagKey = value => value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
 
 /** Durable AI assistance runs outside intake transactions and never executes fixes. */
@@ -132,6 +134,44 @@ export class AiService {
       this.save(job, result);
     });
   }
+  async relatedReview(job, config, result) {
+    if (config.suggest_related === false) { result.related = emptyRelated('disabled'); return; }
+    // Build after local enrichment and tagging so newly linked assets and the
+    // technician's current issue evidence participate in this review.
+    let source;
+    try {
+      source = buildRelatedContext({ desk: this.desk, ticketKey: job.ticket_key });
+      const metadata = { reviewed_at: stamp(), window: source.context.window, coverage: source.context.coverage, provenance: source.provenance };
+      if (!source.context.recent_tickets.length && !source.context.asset_issues.length) {
+        result.related = { ...emptyRelated('no_matches'), ...metadata };
+        this.save(job, result); return;
+      }
+      const matches = await this.request('related', config, source.context);
+      this.current(job, config);
+      const recent = new Set(source.context.recent_tickets.map(ticket => ticket.ticket_key));
+      const assetIssues = new Set(source.context.asset_issues.map(ticket => JSON.stringify([ticket.asset_id, ticket.ticket_key])));
+      if (matches.recent_tickets.some(ticket => !recent.has(ticket.ticket_key))
+        || matches.asset_issues.some(ticket => !assetIssues.has(JSON.stringify([ticket.asset_id, ticket.ticket_key])))
+        || Object.values(config.providers).some(profile => profile.api_key && JSON.stringify(matches).includes(profile.api_key))) {
+        throw fail('AI returned unsupported related ticket references.', 502);
+      }
+      if (!relatedSourcesAreCurrent({ desk: this.desk, workspace: this.workspace, ticketKey: job.ticket_key, provenance: source.provenance })) {
+        result.related = { ...emptyRelated('stale', 'Ticket or asset information changed during the review. Review this ticket again for current matches.'), ...metadata };
+      } else {
+        const recent_tickets = [...new Map(matches.recent_tickets.map(ticket => [ticket.ticket_key, ticket])).values()];
+        const asset_issues = [...new Map(matches.asset_issues.map(ticket => [JSON.stringify([ticket.asset_id, ticket.ticket_key]), ticket])).values()];
+        result.related = { status: recent_tickets.length || asset_issues.length ? 'ready' : 'no_matches', ...metadata, recent_tickets, asset_issues };
+      }
+    } catch (error) {
+      // Settings, current-ticket edits, and superseded claims retain the usual
+      // job safeguards. An independent matching failure does not suppress the
+      // ticket's documentation suggestions or requester acknowledgement.
+      this.current(job, config);
+      if (error?.blocked || error?.superseded) throw error;
+      result.related = { ...emptyRelated('unavailable', 'Related ticket matching is unavailable right now. Review this ticket again to try again.'), reviewed_at: stamp(), window: source?.context.window || null };
+    }
+    this.save(job, result);
+  }
   async execute(job) {
     let config, result = emptyResult();
     try {
@@ -172,6 +212,8 @@ export class AiService {
         }
         this.save(job, result);
       } else result.suggestions = { status: 'disabled', summary: '', steps: [], articles: [] };
+      this.current(job, config);
+      await this.relatedReview(job, config, result);
       this.current(job, config);
       await this.autoReply(job, config, context, result);
       this.current(job, config);
@@ -240,10 +282,13 @@ export class AiService {
     let suggestions = result.suggestions || emptySuggestions();
     if (suggestions.provenance?.some(source => !sharedSourceIsCurrent(this.workspace, source)) || job && job.input_hash !== ticketInputHash(this.desk, key)) suggestions = { status: 'stale', summary: 'The ticket or its documentation has changed. Review again for current suggestions.', steps: [], articles: [] };
     const { provenance, ...visibleSuggestions } = suggestions;
+    let related = !settings.enabled || settings.suggest_related === false ? emptyRelated('disabled') : result.related || emptyRelated('pending', 'Review this ticket to find related tickets and past asset issues.');
+    if (['ready', 'no_matches', 'stale'].includes(related.status)) related = presentRelated({ desk: this.desk, workspace: this.workspace, ticketKey: key, saved: related, user: currentUser });
+    else if (related.status === 'pending' && ['failed', 'blocked', 'needs_attention'].includes(job?.state)) related = emptyRelated('unavailable', 'Related ticket review did not finish. Review this ticket again to try again.');
     const linked = (result.assets_linked || []).flatMap(asset => { try { const record = this.workspace.getAsset(asset.id, currentUser); return [{ id: record.id, ref: record.ref, name: record.name }]; } catch { return []; } });
     let status = settings.enabled ? job?.state || 'not_reviewed' : 'disabled';
     if (status === 'superseded') status = 'queued';
     if (settings.enabled && ['blocked', 'failed', 'needs_attention'].includes(reply.status)) status = reply.status;
-    return { enabled: settings.enabled, status, updated_at: job?.updated_at || null, error: job?.error || reply.error || null, tags_added: result.tags_added || [], location_set: result.location_set || null, assets_linked: linked, suggestions: visibleSuggestions, reply, can_review: settings.enabled && !['queued', 'running'].includes(job?.state) };
+    return { enabled: settings.enabled, status, updated_at: job?.updated_at || null, error: job?.error || reply.error || null, tags_added: result.tags_added || [], location_set: result.location_set || null, assets_linked: linked, suggestions: visibleSuggestions, related, reply, can_review: settings.enabled && !['queued', 'running'].includes(job?.state) };
   }
 }

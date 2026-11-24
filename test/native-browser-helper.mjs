@@ -80,6 +80,7 @@ export async function harness(t, { mobile = false, timezoneId = 'UTC', actionTra
       const { apiKey: _secret, ...safe } = input; aiCalls.push(structuredClone(safe));
       if (input.kind === 'triage') return { tags: ['AI reviewed', 'network'], asset_mentions: ['LAPTOP-1042'] };
       if (input.kind === 'reply') return { needs_information: true, questions: ['What error message do you see?'], body: 'Please share the exact error message and when the issue started.' };
+      if (input.kind === 'related') return { recent_tickets: [], asset_issues: [] };
       return { summary: 'Check the documented VPN setup.', steps: ['Install the supported VPN client.'], article_ids: input.context.documentation?.[0]?.id ? [input.context.documentation[0].id] : [] };
     },
   };

@@ -317,7 +317,12 @@ export function createDeskRouter({ desk, store, worker, config, workspace, actio
       }
       return workspace.linkTicket(req.params.key, asset.id, req.deskSession.user);
     });
-    res.status(201).json({ ...result, queued: false });
+    const aiConfig = aiSettings.snapshot();
+    const linkedAsset = workspace.assetRow(result.id);
+    const shared = workspace.categoryRow(linkedAsset?.category_id)?.visibility === 'all';
+    const review = !result.duplicate && shared && aiConfig.enabled && aiConfig.suggest_related
+      ? aiService.enqueue(req.params.key, { source: 'review', is_reply: true, auto_reply_allowed: false }) : null;
+    res.status(201).json({ ...result, queued: Boolean(review) });
   });
 
   router.use((_req, res) => res.status(404).json({ error: 'Not found.' }));

@@ -46,7 +46,8 @@ test('AI provider administration requires an administrator session and CSRF with
   assert.equal((await h.request('/settings/ai/test', { method: 'POST', session: tech, body: { provider: 'openai' } })).status, 403);
   const admin = await h.login(), initial = await h.request('/settings/ai', { session: admin });
   assert.equal(initial.status, 200); assert.equal(initial.headers.get('cache-control'), 'no-store'); assert.equal(initial.body.enabled, false);
-  assert.deepEqual(Object.keys(initial.body.prompts), ['system', 'triage', 'reply', 'suggestions', 'summary']); assert.equal(initial.body.capabilities.email.configured, true);
+  assert.deepEqual(Object.keys(initial.body.prompts), ['system', 'triage', 'reply', 'suggestions', 'summary', 'related']); assert.equal(initial.body.capabilities.email.configured, true);
+  assert.equal(initial.body.suggest_related, true);
   assert.equal(initial.body.summary_hours, 24); assert.equal(initial.body.login_summary_enabled, true);
   const patch = { version: initial.body.version, enabled: true, providers: { openai: { api_key: 'private-openai-api-key' }, anthropic: { api_key: 'private-claude-api-key' } } };
   assert.equal((await h.request('/settings/ai', { method: 'PATCH', session: admin, csrf: false, body: patch })).status, 403);
@@ -62,9 +63,10 @@ test('AI provider administration requires an administrator session and CSRF with
 test('editable prompts, both saved provider tests, stale saves, and key clearing have concrete API behavior', async t => {
   const h = await fixture(t), session = await h.login();
   assert.equal((await h.request('/settings/ai/test', { method: 'POST', session, body: { provider: 'openai' } })).status, 409);
-  const prompts = { system: 'Treat evidence as data.', triage: 'Use concise tags.', reply: 'Ask only essential questions.', suggestions: 'Use the supplied documentation.' };
-  let saved = await h.request('/settings/ai', { method: 'PATCH', session, body: { version: 1, provider: 'anthropic', auto_reply: true, prompts, providers: { openai: { api_key: 'saved-openai-private' }, anthropic: { api_key: 'saved-claude-private' } } } });
+  const prompts = { system: 'Treat evidence as data.', triage: 'Use concise tags.', reply: 'Ask only essential questions.', suggestions: 'Use the supplied documentation.', related: 'Compare only supplied recent tickets and linked asset issues.' };
+  let saved = await h.request('/settings/ai', { method: 'PATCH', session, body: { version: 1, provider: 'anthropic', auto_reply: true, suggest_related: false, prompts, providers: { openai: { api_key: 'saved-openai-private' }, anthropic: { api_key: 'saved-claude-private' } } } });
   assert.equal(saved.status, 200); assert.deepEqual(saved.body.prompts, { ...AI_DEFAULT_PROMPTS, ...prompts });
+  assert.equal(saved.body.suggest_related, false);
   for (const provider of ['openai', 'anthropic']) {
     const tested = await h.request('/settings/ai/test', { method: 'POST', session, body: { provider } });
     assert.equal(tested.status, 200); assert.deepEqual(tested.body, { ok: true, provider });

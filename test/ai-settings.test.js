@@ -17,6 +17,7 @@ test('AI settings default to disabled and encrypt both provider keys separately 
   const { store, settings } = fixture(t), initial = settings.snapshot();
   assert.equal(initial.version, 1); assert.equal(initial.enabled, false); assert.equal(initial.auto_reply, false);
   assert.equal(initial.login_summary_enabled, true); assert.equal(initial.summary_hours, 24);
+  assert.equal(initial.suggest_related, true);
   assert.deepEqual(initial.prompts, AI_DEFAULT_PROMPTS); assert.equal(initial.providers.openai.model, AI_DEFAULT_MODELS.openai);
   assert.equal(initial.providers.anthropic.key_configured, false);
   const prompts = Object.fromEntries(Object.keys(AI_DEFAULT_PROMPTS).map(key => [key, 'Custom editable ' + key + ' instructions.']));
@@ -119,4 +120,31 @@ test('login summary hours, visibility and prompt edits validate atomically and r
   const changes = store.db.prepare('SELECT changed_fields FROM ai_settings_events ORDER BY version').all();
   assert.deepEqual(JSON.parse(changes[0].changed_fields), ['login_summary_enabled', 'summary_hours', 'prompts.summary']);
   assert.doesNotMatch(JSON.stringify(changes), /Summarize the last configured period/);
+});
+
+test('related-ticket settings default into legacy configurations without rewriting keys and preserve custom prompts through edits', t => {
+  const { store, settings } = fixture(t);
+  settings.update({ version: 1, enabled: true, auto_tags: false, prompts: { system: 'Existing system instructions.', summary: 'Existing summary instructions.' }, providers: { openai: { api_key: 'legacy-related-private-key' } } }, { actor });
+  const previous = store.db.prepare('SELECT * FROM ai_settings WHERE id=1').get(), legacy = JSON.parse(previous.config);
+  delete legacy.suggest_related; delete legacy.prompts.related;
+  store.db.prepare('UPDATE ai_settings SET config=? WHERE id=1').run(JSON.stringify(legacy));
+  const before = store.db.prepare('SELECT * FROM ai_settings WHERE id=1').get();
+  const restored = new AiSettings(store.db, { encryptionKey }), snapshot = restored.snapshot();
+  assert.equal(snapshot.suggest_related, true); assert.equal(snapshot.prompts.related, AI_DEFAULT_PROMPTS.related);
+  assert.equal(snapshot.enabled, true); assert.equal(snapshot.auto_tags, false); assert.equal(snapshot.version, before.version);
+  assert.equal(restored.runtime().providers.openai.api_key, 'legacy-related-private-key');
+  assert.deepEqual(store.db.prepare('SELECT * FROM ai_settings WHERE id=1').get(), before, 'Reading new defaults must preserve the original encrypted keys, settings revision, and timestamps.');
+  for (const patch of [{ suggest_related: 'true' }, { suggest_related: 0 }, { suggest_related: null }, { prompts: { related: '' } }, { prompts: { related: 'x'.repeat(12001) } }, { prompts: { related: 'Bad\u0000instructions' } }]) {
+    assert.throws(() => restored.update({ version: snapshot.version, ...patch }, { actor }), error => error.statusCode === 400);
+    assert.deepEqual(restored.snapshot(), snapshot);
+  }
+  const updated = restored.update({ version: snapshot.version, suggest_related: false, prompts: { related: '  Compare matching symptoms and verified past asset issues.  ' } }, { actor });
+  assert.equal(updated.suggest_related, false); assert.equal(updated.prompts.related, 'Compare matching symptoms and verified past asset issues.');
+  assert.equal(updated.prompts.system, legacy.prompts.system); assert.equal(updated.prompts.summary, legacy.prompts.summary);
+  assert.equal(restored.runtime().providers.openai.api_key, 'legacy-related-private-key');
+  assert.throws(() => restored.update({ version: snapshot.version, suggest_related: true }, { actor }), error => error.statusCode === 409);
+  assert.deepEqual(new AiSettings(store.db, { encryptionKey }).snapshot(), updated);
+  const audit = store.db.prepare('SELECT changed_fields FROM ai_settings_events ORDER BY version DESC LIMIT 1').get();
+  assert.deepEqual(JSON.parse(audit.changed_fields), ['suggest_related', 'prompts.related']);
+  assert.doesNotMatch(audit.changed_fields, /matching symptoms|legacy-related-private-key/);
 });
