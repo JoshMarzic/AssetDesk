@@ -16,6 +16,7 @@ function fixture(t, options = {}) {
 test('AI settings default to disabled and encrypt both provider keys separately from editable prompts', t => {
   const { store, settings } = fixture(t), initial = settings.snapshot();
   assert.equal(initial.version, 1); assert.equal(initial.enabled, false); assert.equal(initial.auto_reply, false);
+  assert.equal(initial.login_summary_enabled, true); assert.equal(initial.summary_hours, 24);
   assert.deepEqual(initial.prompts, AI_DEFAULT_PROMPTS); assert.equal(initial.providers.openai.model, AI_DEFAULT_MODELS.openai);
   assert.equal(initial.providers.anthropic.key_configured, false);
   const prompts = Object.fromEntries(Object.keys(AI_DEFAULT_PROMPTS).map(key => [key, 'Custom editable ' + key + ' instructions.']));
@@ -78,4 +79,44 @@ test('disabled deployments work without an encryption secret while credential wr
   assert.equal(settings.snapshot().enabled, false); assert.equal(settings.runtime().providers.openai.api_key, '');
   assert.throws(() => settings.update({ version: 1, enabled: true, providers: { openai: { api_key: 'never-saved-private-key' } } }, { actor }), error => error.statusCode === 503 && !error.message.includes('never-saved-private-key'));
   assert.equal(settings.snapshot().version, 1); assert.equal(settings.snapshot().enabled, false);
+});
+
+test('legacy AI settings inherit login summary defaults without changing saved credentials, prompts, or revision on reads', t => {
+  const { store, settings } = fixture(t);
+  settings.update({ version: 1, enabled: true, provider: 'anthropic', auto_tags: false, prompts: { system: 'Existing shared instruction.', reply: 'Existing requester instruction.' }, providers: { anthropic: { model: 'claude-existing-model', api_key: 'legacy-provider-private-key' } } }, { actor });
+  const saved = store.db.prepare('SELECT * FROM ai_settings WHERE id=1').get(), legacy = JSON.parse(saved.config);
+  delete legacy.login_summary_enabled; delete legacy.summary_hours; delete legacy.prompts.summary;
+  store.db.prepare('UPDATE ai_settings SET config=? WHERE id=1').run(JSON.stringify(legacy));
+  const before = store.db.prepare('SELECT * FROM ai_settings WHERE id=1').get();
+  const restored = new AiSettings(store.db, { encryptionKey });
+  const snapshot = restored.snapshot();
+  assert.equal(snapshot.version, before.version); assert.equal(snapshot.login_summary_enabled, true); assert.equal(snapshot.summary_hours, 24);
+  assert.equal(snapshot.prompts.summary, AI_DEFAULT_PROMPTS.summary);
+  assert.equal(snapshot.enabled, true); assert.equal(snapshot.auto_tags, false); assert.equal(snapshot.provider, 'anthropic');
+  assert.equal(snapshot.prompts.system, legacy.prompts.system); assert.equal(snapshot.prompts.reply, legacy.prompts.reply);
+  assert.equal(snapshot.providers.anthropic.model, 'claude-existing-model');
+  assert.equal(restored.runtime().providers.anthropic.api_key, 'legacy-provider-private-key');
+  assert.deepEqual(store.db.prepare('SELECT * FROM ai_settings WHERE id=1').get(), before, 'Default merging is read-only and preserves encrypted provider bytes and settings timestamps.');
+  const updated = restored.update({ version: snapshot.version, summary_hours: 48, prompts: { summary: '  Explain current shift priorities.  ' } }, { actor });
+  assert.equal(updated.summary_hours, 48); assert.equal(updated.prompts.summary, 'Explain current shift priorities.');
+  assert.equal(updated.prompts.system, legacy.prompts.system); assert.equal(updated.providers.anthropic.key_configured, true);
+  assert.equal(restored.runtime().providers.anthropic.api_key, 'legacy-provider-private-key');
+  assert.deepEqual(new AiSettings(store.db, { encryptionKey }).snapshot(), updated);
+});
+
+test('login summary hours, visibility and prompt edits validate atomically and retain optimistic settings protection', t => {
+  const { store, settings } = fixture(t), initial = settings.snapshot();
+  for (const patch of [{ summary_hours: 0 }, { summary_hours: 721 }, { summary_hours: 1.5 }, { summary_hours: '24' }, { summary_hours: null }, { summary_hours: Infinity }, { login_summary_enabled: 'true' }, { prompts: { summary: '' } }, { prompts: { summary: 'x'.repeat(12001) } }]) {
+    assert.throws(() => settings.update({ version: initial.version, ...patch }, { actor }), error => error.statusCode === 400);
+    assert.deepEqual(settings.snapshot(), initial);
+  }
+  const saved = settings.update({ version: initial.version, summary_hours: 720, login_summary_enabled: false, prompts: { summary: 'Summarize the last configured period.' } }, { actor });
+  assert.equal(saved.summary_hours, 720); assert.equal(saved.login_summary_enabled, false);
+  assert.equal(saved.prompts.summary, 'Summarize the last configured period.');
+  assert.equal(saved.prompts.triage, initial.prompts.triage);
+  assert.throws(() => settings.update({ version: initial.version, summary_hours: 12 }, { actor }), error => error.statusCode === 409);
+  assert.equal(settings.update({ version: saved.version, summary_hours: 1, login_summary_enabled: true }, { actor }).summary_hours, 1);
+  const changes = store.db.prepare('SELECT changed_fields FROM ai_settings_events ORDER BY version').all();
+  assert.deepEqual(JSON.parse(changes[0].changed_fields), ['login_summary_enabled', 'summary_hours', 'prompts.summary']);
+  assert.doesNotMatch(JSON.stringify(changes), /Summarize the last configured period/);
 });

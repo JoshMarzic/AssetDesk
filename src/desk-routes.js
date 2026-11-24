@@ -15,6 +15,7 @@ import { AiSettings } from './ai-settings.js';
 import { AiProviders } from './ai-provider.js';
 import { AiService } from './ai-service.js';
 import { createAiSettingsRouter, createAiTicketRouter } from './ai-routes.js';
+import { LoginSummaryService, createLoginSummaryRouter } from './login-summary.js';
 
 const COOKIE = 'assetdesk_session';
 const SESSION_MS = 8 * 60 * 60 * 1000;
@@ -145,6 +146,7 @@ export function createDeskRouter({ desk, store, worker, config, workspace, actio
   router.use('/assets', createAssetsRouter({ workspace }));
   router.use('/reports', createReportsRouter({ desk, workspace }));
   router.use('/settings/ai', createAiSettingsRouter({ settings: aiSettings, providers: aiProviders, mail: actionTransports }));
+  router.use('/login-summary', createLoginSummaryRouter({ summary: new LoginSummaryService({ desk, settings: aiSettings, providers: aiProviders }) }));
   router.use('/settings', createSettingsRouter({ desk }));
   router.use('/tickets', createAiTicketRouter({ ai: aiService, desk }));
   router.use('/actions', createActionsRouter({ actions, runner: actionRunner, transports: actionTransports, workflows }));

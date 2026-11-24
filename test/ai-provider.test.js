@@ -45,6 +45,43 @@ test('Claude uses its native Messages API and one forced schema tool without any
   assert.equal(body.disable_parallel_tool_use, undefined, 'Anthropic parallel-tool control belongs inside tool_choice.');
 });
 
+test('login summaries use the editable prompt and strict nested ticket-highlight schema with either provider', async () => {
+  const result = { summary: 'Two recent requests need attention.', highlights: [{ ticket_key: 'HD-123', text: 'Check the open display request.' }] };
+  for (const provider of ['openai', 'anthropic']) {
+    let actual;
+    const providers = new AiProviders({ fetchImpl: async (_url, request) => { actual = JSON.parse(request.body); return provider === 'openai' ? openai(result) : anthropic('summary', result); } });
+    const supplied = input({ provider, kind: 'summary', prompt: 'Summarize the selected recent ticket activity.', context: { hours: 12, tickets: [{ key: 'HD-123', subject: 'Display flickers' }] } });
+    assert.deepEqual(await providers.review(supplied), result);
+    if (provider === 'openai') {
+      assert.equal(actual.response_format.json_schema.name, 'assetdesk_summary');
+      const nested = actual.response_format.json_schema.schema.properties.highlights.items;
+      assert.deepEqual(nested.required, ['ticket_key', 'text']); assert.equal(nested.additionalProperties, false);
+      assert.equal(actual.messages[1].content, supplied.prompt); assert.equal(actual.messages[2].content, JSON.stringify(supplied.context));
+    } else {
+      assert.equal(actual.tool_choice.name, 'assetdesk_summary');
+      assert.deepEqual(actual.tools[0].input_schema, AI_OUTPUT_SCHEMAS.summary);
+      assert.equal(actual.messages[0].content[0].text, supplied.prompt);
+    }
+  }
+});
+
+test('login summaries reject malformed or oversized output and unsafe ticket references before display', () => {
+  const valid = { summary: '  Recent activity.\r\nInvestigate open requests.  ', highlights: [{ ticket_key: 'HD-123', text: '  Investigate the display.  ' }] };
+  assert.deepEqual(validateAiResult('summary', valid), { summary: 'Recent activity.\nInvestigate open requests.', highlights: [{ ticket_key: 'HD-123', text: 'Investigate the display.' }] });
+  assert.deepEqual(validateAiResult('summary', { summary: 'No urgent activity.', highlights: [] }), { summary: 'No urgent activity.', highlights: [] });
+  for (const value of [
+    { summary: '', highlights: [] }, { summary: 'x'.repeat(6001), highlights: [] },
+    { summary: 'Recent work.', highlights: null }, { summary: 'Recent work.', highlights: Array(9).fill(valid.highlights[0]) },
+    { summary: 'Recent work.', highlights: [null] }, { summary: 'Recent work.', highlights: [{}] },
+    { summary: 'Recent work.', highlights: [{ ...valid.highlights[0], url: 'https://unexpected.example' }] },
+    { summary: 'Recent work.', highlights: [{ ticket_key: 'https://unexpected.example', text: 'Look here.' }] },
+    { summary: 'Recent work.', highlights: [{ ticket_key: 'HD-1\nheader', text: 'Look here.' }] },
+    { summary: 'Recent work.', highlights: [{ ticket_key: 'HD-1', text: '' }] },
+    { summary: 'Recent work.', highlights: [{ ticket_key: 'HD-1', text: 'x'.repeat(1001) }] },
+    { summary: 'Recent work.', highlights: [], extra: 'Unexpected output' },
+  ]) assert.throws(() => validateAiResult('summary', value), error => error.statusCode === 502 && !privateText.test(error.message));
+});
+
 test('review results are fully validated before ticket changes or requester email can use them', async () => {
   assert.deepEqual(validateAiResult('triage', { tags: ['  Networking  '], asset_mentions: [] }), { tags: ['Networking'], asset_mentions: [] });
   assert.deepEqual(validateAiResult('reply', { needs_information: true, questions: ['Which error is shown?'], body: 'We received the ticket.\r\nPlease send the error.' }), { needs_information: true, questions: ['Which error is shown?'], body: 'We received the ticket.\nPlease send the error.' });

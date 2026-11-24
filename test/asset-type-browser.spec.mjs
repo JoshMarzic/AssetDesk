@@ -85,6 +85,7 @@ test('Asset type counts follow category permissions and search, and a new login 
   await h.page.getByLabel('Email address', { exact: true }).fill(h.casey.email);
   await h.page.getByLabel('Password', { exact: true }).fill(PASSWORD);
   await h.page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await h.page.getByRole('button', { name: 'Close ticket summary', exact: true }).click();
   await h.page.getByRole('complementary', { name: 'Main navigation' }).waitFor();
   await navigateAssets(h);
   assert.equal(await h.page.getByRole('button', { name: 'All types', exact: true }).getAttribute('aria-pressed'), 'true');

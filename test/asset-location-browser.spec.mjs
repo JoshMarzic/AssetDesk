@@ -92,6 +92,7 @@ test('Location names and counts follow permissions, category and search, while s
   await h.page.getByLabel('Email address', { exact: true }).fill(h.casey.email);
   await h.page.getByLabel('Password', { exact: true }).fill(PASSWORD);
   await h.page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await h.page.getByRole('button', { name: 'Close ticket summary', exact: true }).click();
   await h.page.getByRole('complementary', { name: 'Main navigation' }).waitFor(); await navigateAssets(h);
   assert.equal(await locationPanel(h).getByRole('button', { name: 'All locations', exact: true }).getAttribute('aria-pressed'), 'true');
   await openMoreLocations(h);

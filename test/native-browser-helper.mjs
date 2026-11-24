@@ -72,10 +72,11 @@ export async function harness(t, { mobile = false, timezoneId = 'UTC', actionTra
   };
   const actionsRunner = new ActionsRunner({ actions, transports: actionTransports, logger: { error() {} } });
   const config = { inboundToken: 'native-browser-intake-test-token-12345', adminToken: 'native-browser-admin-test-token-123456', cookieSecure: false };
-  const aiSettings = new AiSettings(store.db, { encryptionKey: config.adminToken }), aiCalls = [], aiConnectionTests = [];
+  const aiSettings = new AiSettings(store.db, { encryptionKey: config.adminToken }), aiCalls = [], aiConnectionTests = [], summaryCalls = [];
   const aiProviders = suppliedAiProviders || {
     async testConnection(input) { aiConnectionTests.push({ provider: input.provider, model: input.model }); return { ok: true, provider: input.provider }; },
     async review(input) {
+      if (input.kind === 'summary') { const { apiKey: _secret, ...safe } = input; summaryCalls.push(structuredClone(safe)); return { summary: 'Recent tickets need the team’s attention. Review the current queue for details.', highlights: [] }; }
       const { apiKey: _secret, ...safe } = input; aiCalls.push(structuredClone(safe));
       if (input.kind === 'triage') return { tags: ['AI reviewed', 'network'], asset_mentions: ['LAPTOP-1042'] };
       if (input.kind === 'reply') return { needs_information: true, questions: ['What error message do you see?'], body: 'Please share the exact error message and when the issue started.' };
@@ -99,12 +100,17 @@ export async function harness(t, { mobile = false, timezoneId = 'UTC', actionTra
   return { store, desk, ticketScheduler, workspace, worker, actions, actionsRunner, workflows, actionMessages, actionApiCalls, actionFlowCalls, actionTransports, aiSettings, aiService, aiProviders, aiCalls, aiConnectionTests, config, browser, context, page, errors, requests, origin, admin, avery, casey, general, assetCategory, publicCategory, privateCategory, privateAssetCategory, publicMedia, privateMedia, vpnArticle, privateArticle, person, laptop, monitor, privateAsset, restrictedPerson, visibleOwnedPC, responseTemplate };
 }
 
-export async function signIn(page, origin, email = ADMIN_EMAIL) {
+export async function signIn(page, origin, email = ADMIN_EMAIL, { keepSummary = false } = {}) {
   await page.goto(origin);
   await page.getByLabel('Email address', { exact: true }).fill(email);
   await page.getByLabel('Password', { exact: true }).fill(PASSWORD);
+  const summaryResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/desk/login-summary' && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await page.getByRole('region', { name: 'Ticket queue' }).waitFor();
+  if (keepSummary) { summaryResponse.catch(() => {}); return; }
+  await summaryResponse;
+  const summaryDialog = page.getByRole('dialog', { name: 'Ticket activity summary', exact: true });
+  if (await summaryDialog.isVisible()) await summaryDialog.getByRole('button', { name: 'Close ticket summary', exact: true }).click();
 }
 export async function eventually(check, message) {
   const until = Date.now() + 10000;

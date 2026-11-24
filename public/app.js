@@ -1,5 +1,6 @@
 import { createActionsUI } from './actions.js';
 import { createAiUI } from './ai.js';
+import { createLoginSummaryUI } from './login-summary.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const app = $('#app');
@@ -81,6 +82,7 @@ let ticketPauseTimer = null, ticketPauseGeneration = 0;
 
 const actionsUI = createActionsUI({ api, esc, icon, toast, getUser: () => state.session?.user, getCurrentView: () => state.current, activate: activateActions, openTicket });
 const aiUI = createAiUI({ api, esc, icon, toast, getUser: () => state.session?.user, getCurrentView: () => state.current, getSettingsTab: () => state.settingsTab, getTicket: () => state.ticket, drawer, onTicketChanged: () => state.busy ? null : reloadTicket({ preserveEdits: true, quiet: true }), openSettings: () => { state.settingsTab = 'ai'; navigate('settings'); } });
+const loginSummaryUI = createLoginSummaryUI({ api, esc, icon, getUser: () => state.session?.user, openTicket, openSettings: () => { state.settingsTab = 'ai'; navigate('settings'); } });
 drawer.addEventListener('close', () => { aiUI.stopTicket(); stopTicketPauseWatch(); });
 function activateActions() {
   state.article = null; state.articleTarget = null; state.articleEditing = false; state.articleDirty = false; state.asset = null; state.assetTarget = null;
@@ -199,10 +201,11 @@ function ticketStatusChoices(ticket) {
 }
 
 async function api(path, { method = 'GET', body } = {}) {
+  const requestSession = state.session;
   const response = await fetch(path, { method, credentials: 'same-origin', headers: { Accept: 'application/json', ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(method !== 'GET' && state.session?.csrfToken ? { 'X-CSRF-Token': state.session.csrfToken } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    if (response.status === 401 && path !== '/api/desk/login') { state.session = null; state.ticketTag = null; state.reports = newReportState(); actionsUI.reset(); closeDialogs(); renderLogin(); }
+    if (response.status === 401 && path !== '/api/desk/login' && state.session === requestSession) { state.session = null; state.ticketTag = null; state.reports = newReportState(); actionsUI.reset(); closeDialogs(); renderLogin(); }
     const error = new Error(data.error || `Request failed (${response.status}).`);
     error.status = response.status;
     throw error;
@@ -217,19 +220,20 @@ function toast(message, error = false) {
   $('#toasts').append(element);
   setTimeout(() => element.remove(), error ? 9000 : 5500);
 }
-function closeDialogs() { aiUI.stopTicket(); stopTicketPauseWatch(); if (drawer.open) drawer.close(); if (modal.open) modal.close(); }
+function closeDialogs() { aiUI.stopTicket(); stopTicketPauseWatch(); loginSummaryUI.close(); if (drawer.open) drawer.close(); if (modal.open) modal.close(); }
 function loadingPanel() { return `<div class="panel"><div class="table-loading"><span class="spinner"></span>Loading your workspace…</div></div>`; }
 function emptyState(title, description, { symbol = 'inbox', action = '' } = {}) { return `<div class="empty-state"><span class="empty-icon">${icon(symbol)}</span><h3>${esc(title)}</h3><p>${esc(description)}</p>${action}</div>`; }
 
 function renderLogin(error = '') {
   aiUI.reset();
+  loginSummaryUI.reset();
   resetAssetInventory();
   app.innerHTML = `<main class="login-page"><section class="login-story"><div class="brand"><span class="brand-mark">${icon('ticket')}</span>AssetDesk</div><div class="login-pitch"><div class="eyebrow">A little clarity goes a long way</div><h1>Great support.<br><span>All in one place.</span></h1><p>A calmer home for your IT tickets, your team, and the equipment that keeps everyone moving.</p><div class="login-features"><div class="login-feature">${icon('inbox')}A clear queue. Nothing slips through.</div><div class="login-feature">${icon('users')}The right technician for every ticket.</div><div class="login-feature">${icon('laptop')}Every asset, with its full support story.</div></div></div><div class="login-story-foot">Thoughtful tools for the people behind the help desk.</div></section><section class="login-form-wrap"><div class="login-form-card"><div class="login-mini-logo">${icon('ticket')}</div><h2>Welcome back.</h2><p class="login-intro">Sign in to your support workspace.<br>Let’s make someone’s day a little easier.</p><form id="login-form" class="login-form"><div class="field"><label for="login-email">Email address</label><input class="input" id="login-email" name="email" type="email" autocomplete="username" required placeholder="you@company.com"></div><div class="field"><label for="login-password">Password</label><input class="input" id="login-password" name="password" type="password" autocomplete="current-password" required placeholder="Enter your password"></div><div class="field-error" role="alert">${esc(error)}</div><button class="btn primary full" type="submit">Sign in ${icon('arrow')}</button></form><div class="login-security">${icon('lock')}Your workspace. Your team’s eyes only.</div><p class="login-help">Need access? Ask your workspace administrator to create a technician account. Your administrator manages access to this workspace and its knowledge categories.</p></div></section></main>`;
   $('#login-form').addEventListener('submit', async event => {
     event.preventDefault();
     const form = event.currentTarget; const button = $('button[type=submit]', form); const values = new FormData(form);
     button.disabled = true; button.textContent = 'Signing in…';
-    try { state.session = await api('/api/desk/login', { method: 'POST', body: { email: values.get('email'), password: values.get('password') } }); await loadWorkflow(); const initial = location.hash.slice(1); if (['overview', 'tickets', 'my-tickets', 'assets', 'team', 'knowledge', 'actions', 'reports', 'settings'].includes(initial)) state.current = initial; renderShell(); await restoreLocation(); }
+    try { state.session = await api('/api/desk/login', { method: 'POST', body: { email: values.get('email'), password: values.get('password') } }); await loadWorkflow(); const initial = location.hash.slice(1); if (['overview', 'tickets', 'my-tickets', 'assets', 'team', 'knowledge', 'actions', 'reports', 'settings'].includes(initial)) state.current = initial; renderShell(); await restoreLocation(); void loginSummaryUI.show(); }
     catch (error) { $('.field-error', form).textContent = error.message; button.disabled = false; button.innerHTML = `Sign in ${icon('arrow')}`; }
   });
 }
@@ -769,7 +773,7 @@ document.addEventListener('change', event => {
   if (event.target.id === 'ticket-sort') { state.sort = event.target.value; state.offset = 0; refresh({ quiet: true }); }
 });
 document.addEventListener('keydown', event => {
-  if (event.key === '/' && !document.activeElement.isContentEditable && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName) && !drawer.open && !modal.open) { event.preventDefault(); $('#global-search')?.focus(); }
+  if (event.key === '/' && !document.activeElement.isContentEditable && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName) && !drawer.open && !modal.open && !$('#login-summary-dialog')?.open) { event.preventDefault(); $('#global-search')?.focus(); }
 });
 modal.addEventListener('close', () => { if (modal.dataset.responseLibrary === 'true' && drawer.open && state.ticket) reloadTicket({ preserveEdits: true }).catch(error => toast(error.message, true)); });
 for (const dialog of [modal, drawer]) dialog.addEventListener('click', event => { if (event.target === dialog) { const box = dialog.getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close(); } });

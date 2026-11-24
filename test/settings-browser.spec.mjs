@@ -226,6 +226,7 @@ test('Settings supports mobile deep links while technician sessions cannot chang
   await h.page.getByLabel('Email address', { exact: true }).fill(ADMIN_EMAIL);
   await h.page.getByLabel('Password', { exact: true }).fill(PASSWORD);
   await h.page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await h.page.getByRole('button', { name: 'Close ticket summary', exact: true }).click();
   await h.page.getByRole('heading', { name: 'Settings', exact: true }).waitFor();
   await noOverflow(h.page);
   await addChoice(h, 'category', 'Mobile operations');

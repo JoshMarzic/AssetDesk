@@ -10,6 +10,7 @@ export const AI_OUTPUT_SCHEMAS = Object.freeze({
   triage: { type: 'object', additionalProperties: false, required: ['tags', 'asset_mentions'], properties: { tags: strings(20, 50), asset_mentions: strings(50, 200) } },
   reply: { type: 'object', additionalProperties: false, required: ['needs_information', 'questions', 'body'], properties: { needs_information: { type: 'boolean' }, questions: strings(8, 1000), body: string(8000) } },
   suggestions: { type: 'object', additionalProperties: false, required: ['summary', 'steps', 'article_ids'], properties: { summary: string(4000), steps: strings(12, 2000), article_ids: strings(10, 100) } },
+  summary: { type: 'object', additionalProperties: false, required: ['summary', 'highlights'], properties: { summary: string(6000, 1), highlights: { type: 'array', maxItems: 8, items: { type: 'object', additionalProperties: false, required: ['ticket_key', 'text'], properties: { ticket_key: string(100, 1), text: string(1000, 1) } } } } },
 });
 
 // OpenAI structured-output support varies between model families. Keep its
@@ -56,6 +57,16 @@ export function validateAiResult(kind, input) {
     const questions = resultList(input.questions, 8, 1000, true), body = resultText(input.body, 8000, { empty: !input.needs_information });
     if (input.needs_information && !questions.length) throw fail('The AI provider did not provide the missing-information questions. Review the reply prompt and try again.', 502);
     return { needs_information: input.needs_information, questions, body };
+  }
+  if (kind === 'summary') {
+    if (!Array.isArray(input.highlights) || input.highlights.length > 8) throw fail('The AI provider returned an invalid review. Review the prompts and try again.', 502);
+    const highlights = input.highlights.map(item => {
+      if (!plain(item) || Object.keys(item).length !== 2 || !Object.hasOwn(item, 'ticket_key') || !Object.hasOwn(item, 'text')) throw fail('The AI provider returned an invalid review. Review the prompts and try again.', 502);
+      const ticket_key = resultText(item.ticket_key, 100, { multiline: false });
+      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(ticket_key)) throw fail('The AI provider returned invalid ticket references.', 502);
+      return { ticket_key, text: resultText(item.text, 1000) };
+    });
+    return { summary: resultText(input.summary, 6000), highlights };
   }
   const article_ids = resultList(input.article_ids, 10, 100);
   if (article_ids.some(id => !/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(id))) throw fail('The AI provider returned invalid documentation references.', 502);
