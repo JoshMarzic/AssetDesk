@@ -90,6 +90,27 @@ BOOKSTACK_URL=http://127.0.0.1:6875 node scripts/import-bookstack.mjs --database
 
 The helper uses the existing private `.env` for the remaining legacy settings. A configured `BOOKSTACK_KNOWLEDGE_BOOK_ID` limits knowledge import to that book, while still importing the legacy Assets book. Without it, accessible non-ticket books are imported. Images must be supported raster files served by the configured legacy wiki; arbitrary external images are not downloaded. The helper and its isolated client are under `migration/` and are never loaded by normal application startup.
 
+## Deploy on Railway
+
+1. Create a Railway service from the GitHub repository's `main` branch. The root `Dockerfile` installs dependencies without BuildKit secret mounts, so no `proxy_ca` secret is needed.
+2. Set these service variables before starting the first deployment. Railway does not load your ignored local `.env` automatically:
+
+   | Variable | Value |
+   | --- | --- |
+   | `INBOUND_EMAIL_TOKEN` | A random secret of at least 32 characters |
+   | `ADMIN_TOKEN` | A different random secret of at least 32 characters |
+   | `DASHBOARD_ADMIN_EMAIL` | Your administrator email address |
+   | `DASHBOARD_ADMIN_PASSWORD` | An initial password of 12–256 characters |
+   | `DATABASE_PATH` | `/data/assetdesk.sqlite` |
+   | `PORT` | `3000` |
+   | `COOKIE_SECURE` | `true` |
+
+   You can generate each token locally with `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`. Keep the same secrets across redeployments; `ADMIN_TOKEN` also protects saved AI credentials unless a separate `AI_ENCRYPTION_KEY` is configured.
+3. Attach a persistent volume at `/data` and keep the service at one replica. The volume must be writable by the running process. The Docker image normally uses the `node` user (UID 1000). If deployment logs report permission denied when writing `/data`, set the Railway service variable `RAILWAY_RUN_UID=0` and redeploy. Do not put SQLite on the temporary image filesystem.
+4. Generate a public domain targeting port `3000`, use `/readyz` as the healthcheck path, and deploy. Open the HTTPS domain and sign in with the initial administrator credentials above. Create a separate technician login for your coworker.
+
+If an older build reports that `--mount=type=secret,id=proxy_ca` is unsupported, deploy the latest `main` commit. The dependency-install instruction should be `RUN npm ci --omit=dev --strict-ssl=true`. Keep TLS verification enabled. Railway uses this Dockerfile directly; it does not apply the local Compose volume or environment settings.
+
 ## Deploy on a Linux server with HTTPS
 
 This example assumes Docker, Compose v2, Node.js 24/npm, and Caddy installed as a host service. It is a deployment recipe, not automatic server provisioning.

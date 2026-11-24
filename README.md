@@ -4,7 +4,7 @@ AssetDesk is a self-contained IT service desk: **tickets, technicians, knowledge
 
 The home dashboard shows the active queue, unassigned and overdue work, and technician workload. Knowledge categories have their own access controls. Assets include people and equipment, with ticket links in both directions. **Actions** runs templates with approvals, email, API calls, Power Automate flows, manual tasks, and delays. **Workflows** combine those templates and other workflows into reusable sequences.
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for Docker Desktop installation, upgrades, migration, HTTPS, and mailbox routing.
+See [DEPLOYMENT.md](DEPLOYMENT.md) for Docker Desktop installation, Railway hosting, upgrades, migration, HTTPS, and mailbox routing.
 
 View the [AssetDesk v0.7 Feature Tour (PDF)](docs/AssetDesk-Feature-Tour.pdf) for 23 pages of screenshots and feature captions using demonstration data. This snapshot predates the executable Actions workflows introduced in v0.8.
 
@@ -31,10 +31,10 @@ node scripts/setup.mjs
 node --env-file=.env --watch src/server.js
 ```
 
-Stop the Compose service first if it already occupies port 3000. When a managed cloud build supplies a proxy CA, use the existing optional BuildKit secret without disabling TLS verification:
+Stop the Compose service first if it already occupies port 3000. To build the image directly:
 
 ```sh
-docker build --secret id=proxy_ca,src="$CODEX_PROXY_CERT" -t assetdesk-assetdesk .
+docker build -t assetdesk-assetdesk .
 docker compose up -d --wait assetdesk
 ```
 
